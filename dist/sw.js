@@ -1,10 +1,7 @@
-const CACHE_NAME = 'alif-billing-shell-v2';
+const CACHE_NAME = 'alif-billing-shell-v3';
 const APP_SHELL_ASSETS = [
   './',
-  './index.html',
   './manifest.webmanifest',
-  './assets/index.css',
-  './assets/index.js',
   './favicon.ico',
   './favicon-32x32.png',
   './favicon-16x16.png',
@@ -17,7 +14,18 @@ const APP_SHELL_ASSETS = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL_ASSETS)).then(() => self.skipWaiting())
+    caches
+      .open(CACHE_NAME)
+      .then((cache) => {
+        return Promise.allSettled(
+          APP_SHELL_ASSETS.map((asset) =>
+            cache.add(asset).catch((err) => {
+              console.warn('[SW] Could not pre-cache asset:', asset, err);
+            })
+          )
+        );
+      })
+      .then(() => self.skipWaiting())
   );
 });
 
@@ -67,7 +75,7 @@ self.addEventListener('fetch', (event) => {
         })
         .catch(() => {
           if (request.mode === 'navigate') {
-            return caches.match('./index.html');
+            return caches.match('./').then((fallback) => fallback || caches.match('./index.html'));
           }
           return new Response('Offline', { status: 503, statusText: 'Offline' });
         });
