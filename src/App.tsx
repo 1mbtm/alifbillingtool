@@ -57,6 +57,7 @@ export default function App() {
   const [preselectedCustomer, setPreselectedCustomer] = useState<Customer | null>(null);
   const [toast, setToast] = useState<{ message: string; isError: boolean } | null>(null);
   const [dbError, setDbError] = useState<string | null>(null);
+  const [isInitializing, setIsInitializing] = useState<boolean>(true);
 
   function showNotification(message: string, isError = false) {
     setToast({ message, isError });
@@ -88,6 +89,8 @@ export default function App() {
       setDbError(null);
     } catch (err: any) {
       setDbError(err?.message || 'Database initialization error');
+    } finally {
+      setIsInitializing(false);
     }
   }
 
@@ -177,13 +180,22 @@ export default function App() {
 
       {/* Main Content Area (18px horizontal padding on mobile, 24px on desktop) */}
       <main className="max-w-5xl mx-auto w-full px-4 sm:px-6 py-6 flex-1">
-        {activeTab === 'dashboard' && (
-          <DashboardView
-            metrics={metrics}
-            onNavigate={(tab) => setActiveTab(tab)}
-            onSelectInvoice={(inv) => setSelectedInvoiceId(inv.id)}
-          />
-        )}
+        {isInitializing ? (
+          <div className="bg-white border border-alif-border p-8 text-center space-y-2">
+            <div className="font-ubuntu text-lg font-medium text-alif-black">alif.</div>
+            <p className="text-xs text-alif-grey uppercase tracking-widest">
+              Initializing local database &amp; offline storage...
+            </p>
+          </div>
+        ) : (
+          <>
+            {activeTab === 'dashboard' && (
+              <DashboardView
+                metrics={metrics}
+                onNavigate={(tab) => setActiveTab(tab)}
+                onSelectInvoice={(inv) => setSelectedInvoiceId(inv.id)}
+              />
+            )}
 
         {activeTab === 'create-bill' && (
           <CreateBillView
@@ -248,6 +260,8 @@ export default function App() {
             onRefreshAll={refreshAllData}
             onNotify={showNotification}
           />
+        )}
+          </>
         )}
       </main>
 

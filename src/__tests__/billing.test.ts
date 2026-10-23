@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach } from 'vitest';
 import Dexie from 'dexie';
 import { ALIFBillingDatabase } from '../db/database';

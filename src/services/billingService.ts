@@ -432,14 +432,16 @@ export async function createInvoice(
       throw new Error('Discount cannot be negative');
     }
 
+    const settings = await getShopSettings(database);
+
     return await database.transaction(
       'rw',
       database.settings,
       database.customers,
       database.invoices,
       database.payments,
+      database.itemPhotos,
       async () => {
-        const settings = await getShopSettings(database);
         const totals = calculateInvoiceTotals({
           items: normalizedItems,
           discountType,
@@ -730,7 +732,7 @@ export async function reopenAndUpdateInvoice(
   database: ALIFBillingDatabase = defaultDb
 ): Promise<Invoice> {
   await database.ensureSeeded();
-  return await database.transaction('rw', database.invoices, database.payments, async () => {
+  return await database.transaction('rw', database.invoices, database.payments, database.itemPhotos, async () => {
     const invoice: Invoice | undefined = await database.invoices.get(input.invoiceId);
     if (!invoice) {
       throw new Error('Invoice not found');

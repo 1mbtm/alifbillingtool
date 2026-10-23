@@ -1,4 +1,4 @@
-import Dexie from 'dexie';
+import Dexie, { Table } from 'dexie';
 import {
   CatalogueItem,
   Customer,
@@ -10,12 +10,12 @@ import {
 import { DEFAULT_CATALOGUE_ITEMS, DEFAULT_SHOP_SETTINGS } from './seed';
 
 export class ALIFBillingDatabase extends Dexie {
-  settings!: any;
-  customers!: any;
-  catalogue!: any;
-  invoices!: any;
-  payments!: any;
-  itemPhotos!: any;
+  settings!: Table<ShopSettings, string>;
+  customers!: Table<Customer, string>;
+  catalogue!: Table<CatalogueItem, string>;
+  invoices!: Table<Invoice, string>;
+  payments!: Table<PaymentRecord, string>;
+  itemPhotos!: Table<ItemPhotoRecord, string>;
 
   constructor(dbName = 'alif_ladies_tailor_db') {
     super(dbName);
