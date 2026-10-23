@@ -9,6 +9,7 @@ import {
   DiscountType,
   Invoice,
   InvoiceLineItem,
+  ItemPhotoRecord,
   PaymentMethod,
   PaymentRecord,
   PaymentRecordType,
@@ -345,6 +346,7 @@ export interface CreateInvoiceLineInput {
   unitPricePaise: number;
   costPricePaise?: number;
   notes?: string;
+  photoId?: string;
 }
 
 export interface CreateInvoiceInput {
@@ -418,7 +420,8 @@ export async function createInvoice(
         unitPricePaise: unitPaise,
         costPricePaise: raw.costPricePaise !== undefined ? Math.round(raw.costPricePaise) : undefined,
         lineTotalPaise,
-        notes: raw.notes ? String(raw.notes).trim() : undefined
+        notes: raw.notes ? String(raw.notes).trim() : undefined,
+        photoId: raw.photoId || undefined
       };
     });
 
@@ -557,6 +560,20 @@ export async function createInvoice(
         };
 
         await database.invoices.put(invoice);
+        if (database.itemPhotos) {
+          for (const item of normalizedItems) {
+            if (item.photoId) {
+              const existingPhoto = await database.itemPhotos.get(item.photoId);
+              if (existingPhoto) {
+                await database.itemPhotos.put({
+                  ...existingPhoto,
+                  invoiceId,
+                  lineItemId: item.id
+                });
+              }
+            }
+          }
+        }
         return { invoice, payments: createdPayments, customer };
       }
     );
@@ -732,7 +749,8 @@ export async function reopenAndUpdateInvoice(
             unitPricePaise: Math.round(Number(raw.unitPricePaise)),
             costPricePaise: raw.costPricePaise !== undefined ? Math.round(raw.costPricePaise) : undefined,
             lineTotalPaise,
-            notes: raw.notes ? String(raw.notes).trim() : undefined
+            notes: raw.notes ? String(raw.notes).trim() : undefined,
+            photoId: raw.photoId || undefined
           };
         })
       : invoice.items;
@@ -780,6 +798,28 @@ export async function reopenAndUpdateInvoice(
     };
 
     await database.invoices.put(updated);
+    if (database.itemPhotos) {
+      const keptPhotoIds = new Set(
+        updatedItems.map((it) => it.photoId).filter((id): id is string => Boolean(id))
+      );
+      for (const prevItem of invoice.items) {
+        if (prevItem.photoId && !keptPhotoIds.has(prevItem.photoId)) {
+          await database.itemPhotos.delete(prevItem.photoId);
+        }
+      }
+      for (const item of updatedItems) {
+        if (item.photoId) {
+          const existingPhoto = await database.itemPhotos.get(item.photoId);
+          if (existingPhoto) {
+            await database.itemPhotos.put({
+              ...existingPhoto,
+              invoiceId: invoice.id,
+              lineItemId: item.id
+            });
+          }
+        }
+      }
+    }
     return updated;
   });
 }
@@ -1212,4 +1252,246 @@ export async function restoreBackupPayload(
       };
     }
   );
+}
+
+
+// ============================================================================
+// 8. ITEM PHOTO PROCESSING & INDEXEDDB BLOB STORAGE
+// ============================================================================
+
+const MAX_RAW_FILE_BYTES = 15 * 1024 * 1024; // 15 MB raw upload ceiling
+const MAX_DIMENSION_PX = 960; // Keep fabric details clear while compacting size
+const JPEG_QUALITY = 0.78;
+
+export interface ProcessedImageResult {
+  blob: Blob;
+  dataUrl: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  sizeBytes: number;
+}
+
+export function validateImageFile(file: File | Blob | null | undefined): void {
+  if (!file) {
+    throw new Error('No image file selected.');
+  }
+  if (file.size <= 0) {
+    throw new Error('Selected image file is empty.');
+  }
+  if (file.size > MAX_RAW_FILE_BYTES) {
+    throw new Error('Image file is too large (maximum 15 MB).');
+  }
+  const type = (file.type || '').toLowerCase();
+  if (type && !type.startsWith('image/')) {
+    throw new Error('Unsupported file format. Please select an image file (JPEG, PNG, WebP).');
+  }
+}
+
+export async function blobToDataUrl(blob: Blob): Promise<string> {
+  if (typeof FileReader !== 'undefined') {
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('Failed to read image file.'));
+      reader.readAsDataURL(blob);
+    });
+  }
+  const arrayBuffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64 = typeof btoa === 'function' ? btoa(binary) : '';
+  return `data:${blob.type || 'image/jpeg'};base64,${base64}`;
+}
+
+export function dataUrlToBlob(dataUrl: string): Blob {
+  const parts = String(dataUrl || '').split(',');
+  if (parts.length < 2) {
+    throw new Error('Invalid image data URL.');
+  }
+  const mimeMatch = parts[0].match(/data:([^;]+);base64/);
+  const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+  const binaryStr = typeof atob === 'function' ? atob(parts[1]) : '';
+  const len = binaryStr.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryStr.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mimeType });
+}
+
+export async function compressAndResizeImage(
+  file: File | Blob,
+  maxDimension = MAX_DIMENSION_PX,
+  quality = JPEG_QUALITY
+): Promise<ProcessedImageResult> {
+  validateImageFile(file);
+  const rawDataUrl = await blobToDataUrl(file);
+
+  if (typeof document === 'undefined' || typeof Image === 'undefined') {
+    return {
+      blob: file instanceof Blob ? new Blob([file], { type: file.type || 'image/jpeg' }) : file,
+      dataUrl: rawDataUrl,
+      mimeType: file.type || 'image/jpeg',
+      width: 480,
+      height: 480,
+      sizeBytes: file.size
+    };
+  }
+
+  return await new Promise<ProcessedImageResult>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const origW = img.naturalWidth || img.width || 480;
+        const origH = img.naturalHeight || img.height || 480;
+        let targetW = origW;
+        let targetH = origH;
+
+        if (origW > maxDimension || origH > maxDimension) {
+          if (origW >= origH) {
+            targetW = maxDimension;
+            targetH = Math.max(1, Math.round((origH * maxDimension) / origW));
+          } else {
+            targetH = maxDimension;
+            targetW = Math.max(1, Math.round((origW * maxDimension) / origH));
+          }
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve({
+            blob: new Blob([file], { type: file.type || 'image/jpeg' }),
+            dataUrl: rawDataUrl,
+            mimeType: file.type || 'image/jpeg',
+            width: origW,
+            height: origH,
+            sizeBytes: file.size
+          });
+          return;
+        }
+
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, targetW, targetH);
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+        if (!compressedDataUrl || !compressedDataUrl.startsWith('data:image/')) {
+          resolve({
+            blob: new Blob([file], { type: file.type || 'image/jpeg' }),
+            dataUrl: rawDataUrl,
+            mimeType: file.type || 'image/jpeg',
+            width: targetW,
+            height: targetH,
+            sizeBytes: file.size
+          });
+          return;
+        }
+
+        const compressedBlob = dataUrlToBlob(compressedDataUrl);
+        resolve({
+          blob: compressedBlob,
+          dataUrl: compressedDataUrl,
+          mimeType: 'image/jpeg',
+          width: targetW,
+          height: targetH,
+          sizeBytes: compressedBlob.size
+        });
+      } catch (_err) {
+        resolve({
+          blob: new Blob([file], { type: file.type || 'image/jpeg' }),
+          dataUrl: rawDataUrl,
+          mimeType: file.type || 'image/jpeg',
+          width: 480,
+          height: 480,
+          sizeBytes: file.size
+        });
+      }
+    };
+
+    img.onerror = () => {
+      resolve({
+        blob: new Blob([file], { type: file.type || 'image/jpeg' }),
+        dataUrl: rawDataUrl,
+        mimeType: file.type || 'image/jpeg',
+        width: 480,
+        height: 480,
+        sizeBytes: file.size
+      });
+    };
+
+    img.src = rawDataUrl;
+  });
+}
+
+export async function saveItemPhotoFromFile(
+  input: {
+    file: File | Blob;
+    lineItemId: string;
+    invoiceId?: string;
+    existingPhotoId?: string;
+  },
+  database: ALIFBillingDatabase = defaultDb
+): Promise<ItemPhotoRecord> {
+  await database.ensureSeeded();
+  const processed = await compressAndResizeImage(input.file);
+  const photoId = input.existingPhotoId || generateId('photo');
+  const record: ItemPhotoRecord = {
+    id: photoId,
+    invoiceId: input.invoiceId,
+    lineItemId: input.lineItemId,
+    blob: processed.blob,
+    dataUrl: processed.dataUrl,
+    mimeType: processed.mimeType,
+    width: processed.width,
+    height: processed.height,
+    sizeBytes: processed.sizeBytes,
+    createdAt: new Date().toISOString()
+  };
+  await database.itemPhotos.put(record);
+  return record;
+}
+
+export async function getItemPhoto(
+  photoId: string,
+  database: ALIFBillingDatabase = defaultDb
+): Promise<ItemPhotoRecord | undefined> {
+  await database.ensureSeeded();
+  const rec: ItemPhotoRecord | undefined = await database.itemPhotos.get(photoId);
+  if (!rec) return undefined;
+  if (!(rec.blob instanceof Blob) && rec.dataUrl) {
+    rec.blob = dataUrlToBlob(rec.dataUrl);
+  }
+  return rec;
+}
+
+export async function getItemPhotosMap(
+  photoIds: string[],
+  database: ALIFBillingDatabase = defaultDb
+): Promise<Record<string, ItemPhotoRecord>> {
+  await database.ensureSeeded();
+  const map: Record<string, ItemPhotoRecord> = {};
+  const uniqueIds = Array.from(new Set(photoIds.filter(Boolean)));
+  for (const id of uniqueIds) {
+    const rec = await getItemPhoto(id, database);
+    if (rec) {
+      map[id] = rec;
+    }
+  }
+  return map;
+}
+
+export async function deleteItemPhoto(
+  photoId: string,
+  database: ALIFBillingDatabase = defaultDb
+): Promise<void> {
+  if (!photoId) return;
+  await database.ensureSeeded();
+  await database.itemPhotos.delete(photoId);
 }

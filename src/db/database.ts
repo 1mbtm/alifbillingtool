@@ -3,6 +3,7 @@ import {
   CatalogueItem,
   Customer,
   Invoice,
+  ItemPhotoRecord,
   PaymentRecord,
   ShopSettings
 } from '../types/billing';
@@ -14,6 +15,7 @@ export class ALIFBillingDatabase extends Dexie {
   catalogue!: any;
   invoices!: any;
   payments!: any;
+  itemPhotos!: any;
 
   constructor(dbName = 'alif_ladies_tailor_db') {
     super(dbName);
@@ -47,6 +49,21 @@ export class ALIFBillingDatabase extends Dexie {
           }
         }
       });
+
+    // Version 3 safe migration adding itemPhotos table for optional line-item photo blobs
+    // Preserves all existing settings, customers, catalogue, invoices, and payments records.
+    this.version(3)
+      .stores({
+        settings: 'id',
+        customers: 'id, name, phone, updatedAt',
+        catalogue: 'id, name, category, isActive',
+        invoices: 'id, &invoiceNumber, customerId, invoiceDate, status, idempotencyKey, createdAt',
+        payments: 'id, invoiceId, customerId, date, type, method, createdAt',
+        itemPhotos: 'id, invoiceId, lineItemId, createdAt'
+      })
+      .upgrade(async () => {
+        // Existing tables and records are preserved untouched during V3 upgrade
+      });
   }
 
   /**
@@ -58,6 +75,22 @@ export class ALIFBillingDatabase extends Dexie {
     const existingSettings: ShopSettings | undefined = await this.settings.get('default');
     if (!existingSettings) {
       await this.settings.put({ ...DEFAULT_SHOP_SETTINGS });
+    } else if (
+      existingSettings.shopName === 'ALiF Ladies Tailor' ||
+      existingSettings.phone === '+91 94311 00000' ||
+      existingSettings.address === 'Station Road, Near Chowk Bazar'
+    ) {
+      // Auto-migrate legacy placeholder values to official brand details
+      await this.settings.put({
+        ...existingSettings,
+        shopName: existingSettings.shopName === 'ALiF Ladies Tailor' ? 'alif.' : existingSettings.shopName,
+        address: existingSettings.address === 'Station Road, Near Chowk Bazar' ? 'Daal Kuan College Road' : existingSettings.address,
+        phone: existingSettings.phone === '+91 94311 00000' ? '7250470009' : existingSettings.phone,
+        whatsappNumber: existingSettings.whatsappNumber === '919431100000' ? '917250470009' : existingSettings.whatsappNumber,
+        receiptFooter: existingSettings.receiptFooter?.includes('ALiF Ladies Tailor')
+          ? existingSettings.receiptFooter.replace('ALiF Ladies Tailor', 'alif.')
+          : existingSettings.receiptFooter
+      });
     }
 
     const catalogueCount: number = await this.catalogue.count();
@@ -68,3 +101,4 @@ export class ALIFBillingDatabase extends Dexie {
 }
 
 export const db = new ALIFBillingDatabase();
+export type { CatalogueItem, Customer, Invoice, ItemPhotoRecord, PaymentRecord, ShopSettings };

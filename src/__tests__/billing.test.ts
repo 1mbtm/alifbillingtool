@@ -377,7 +377,7 @@ describe('4. Backup Validation, Atomic Restore Protection & PDF/Sharing', () => 
     expect(pdfBytes.byteLength).toBeGreaterThan(800);
     const pdfText = Buffer.from(pdfBytes).toString('latin1');
     expect(pdfText.startsWith('%PDF-1.4')).toBe(true);
-    expect(pdfText).toContain('ALiF Ladies Tailor');
+    expect(pdfText).toContain('alif.');
     expect(pdfText).toContain('ALIF-2026-0001');
     expect(pdfText).toContain('Amina Khatoon');
     expect(pdfText).toContain('Astar Blouse');
@@ -393,5 +393,131 @@ describe('4. Backup Validation, Atomic Restore Protection & PDF/Sharing', () => 
     const csv = generateInvoicesCsv([invoice]);
     expect(csv).toContain('ALIF-2026-0001');
     expect(csv).toContain('Amina Khatoon');
+  });
+});
+
+import {
+  deleteItemPhoto,
+  getItemPhoto,
+  getItemPhotosMap,
+  saveItemPhotoFromFile,
+  validateImageFile
+} from '../services/billingService';
+
+describe('5. Item Photos Persistence & Versioned Migration', () => {
+  const testDbName = 'test_alif_db_photos';
+  let db: ALIFBillingDatabase;
+
+  beforeEach(async () => {
+    await Dexie.delete(testDbName);
+    db = new ALIFBillingDatabase(testDbName);
+    await db.ensureSeeded();
+  });
+
+  it('validates image files, stores compressed photo Blobs in IndexedDB, and preserves photo associations across invoice save and reopen', async () => {
+    // Reject empty or non-image files gracefully
+    expect(() => validateImageFile(null)).toThrow(/No image file selected/);
+    expect(() => validateImageFile(new Blob([], { type: 'image/jpeg' }))).toThrow(/empty/);
+    expect(() => validateImageFile(new Blob(['hello'], { type: 'text/plain' }))).toThrow(/Unsupported file format/);
+
+    // Save a valid image Blob for a line item
+    const samplePngBytes = new Uint8Array([
+      137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+      0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0, 144, 119, 83, 222
+    ]);
+    const imageBlob = new Blob([samplePngBytes], { type: 'image/png' });
+
+    const photoRec = await saveItemPhotoFromFile(
+      {
+        file: imageBlob,
+        lineItemId: 'line-blouse-1'
+      },
+      db
+    );
+    expect(photoRec.id).toMatch(/^photo-/);
+    expect(photoRec.blob instanceof Blob).toBe(true);
+    expect(photoRec.dataUrl.startsWith('data:image/')).toBe(true);
+
+    // Create an invoice with the attached photoId on item #1 and no photo on item #2
+    const created = await createInvoice(
+      {
+        customerName: 'Farah Khan',
+        customerPhone: '9876501234',
+        invoiceDate: '2026-10-23',
+        items: [
+          {
+            id: 'line-blouse-1',
+            catalogueItemId: 'srv-astar-blouse',
+            name: 'Astar Blouse',
+            category: 'service',
+            quantity: 1,
+            unit: 'pc',
+            unitPricePaise: 45000,
+            photoId: photoRec.id
+          },
+          {
+            id: 'line-pico-2',
+            catalogueItemId: 'srv-fall-pico',
+            name: 'Fall & Pico',
+            category: 'service',
+            quantity: 1,
+            unit: 'saree',
+            unitPricePaise: 12000
+          }
+        ]
+      },
+      db
+    );
+
+    expect(created.invoice.items[0].photoId).toBe(photoRec.id);
+    expect(created.invoice.items[1].photoId).toBeUndefined();
+
+    // Verify photo record in IndexedDB is linked to the created invoiceId
+    const storedPhoto = await getItemPhoto(photoRec.id, db);
+    expect(storedPhoto).toBeDefined();
+    expect(storedPhoto!.invoiceId).toBe(created.invoice.id);
+    expect(storedPhoto!.lineItemId).toBe('line-blouse-1');
+    expect(storedPhoto!.blob instanceof Blob).toBe(true);
+
+    // Reopen and reorder items (move Fall & Pico first, Astar Blouse second) -> photo stays with Astar Blouse
+    const reopened = await reopenAndUpdateInvoice(
+      {
+        invoiceId: created.invoice.id,
+        items: [
+          {
+            id: 'line-pico-2',
+            catalogueItemId: 'srv-fall-pico',
+            name: 'Fall & Pico',
+            category: 'service',
+            quantity: 1,
+            unit: 'saree',
+            unitPricePaise: 12000
+          },
+          {
+            id: 'line-blouse-1',
+            catalogueItemId: 'srv-astar-blouse',
+            name: 'Astar Blouse',
+            category: 'service',
+            quantity: 1,
+            unit: 'pc',
+            unitPricePaise: 48000,
+            photoId: photoRec.id
+          }
+        ]
+      },
+      db
+    );
+
+    expect(reopened.items[0].name).toBe('Fall & Pico');
+    expect(reopened.items[0].photoId).toBeUndefined();
+    expect(reopened.items[1].name).toBe('Astar Blouse');
+    expect(reopened.items[1].photoId).toBe(photoRec.id);
+
+    const mapAfterReopen = await getItemPhotosMap([photoRec.id], db);
+    expect(mapAfterReopen[photoRec.id]).toBeDefined();
+
+    // Delete photo explicitly
+    await deleteItemPhoto(photoRec.id, db);
+    expect(await getItemPhoto(photoRec.id, db)).toBeUndefined();
   });
 });

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="192" height="192">
+  <rect width="192" height="192" rx="36" fill="#0B0B0D"/>
+  <rect x="14" y="14" width="164" height="164" rx="26" fill="none" stroke="#6B7280" stroke-width="1.5" stroke-dasharray="4 4"/>
+  <text x="96" y="102" text-anchor="middle" font-family="Georgia, serif" font-size="48" font-weight="bold" fill="#F7F6F2" letter-spacing="3">ALiF</text>
+  <text x="96" y="132" text-anchor="middle" font-family="sans-serif" font-size="13" font-weight="500" fill="#9CA3AF" letter-spacing="4">LADIES TAILOR</text>
+</svg>

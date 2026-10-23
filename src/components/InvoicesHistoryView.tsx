@@ -102,7 +102,6 @@ export function InvoicesHistoryView({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="ALIF-2026-0001 or client..."
               data-testid="input-invoice-search"
               className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
             />

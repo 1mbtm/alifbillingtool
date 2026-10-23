@@ -55,6 +55,19 @@ export interface CatalogueItem {
   updatedAt: string;
 }
 
+export interface ItemPhotoRecord {
+  id: string;
+  invoiceId?: string;
+  lineItemId: string;
+  blob: Blob;
+  dataUrl: string;
+  mimeType: string;
+  width: number;
+  height: number;
+  sizeBytes: number;
+  createdAt: string;
+}
+
 export interface InvoiceLineItem {
   id: string;
   catalogueItemId: string | null;
@@ -66,6 +79,7 @@ export interface InvoiceLineItem {
   costPricePaise?: number;
   lineTotalPaise: number;
   notes?: string;
+  photoId?: string;
 }
 
 export interface PaymentRecord {

@@ -1,12 +1,18 @@
-const CACHE_NAME = 'alif-billing-shell-v1';
+const CACHE_NAME = 'alif-billing-shell-v2';
 const APP_SHELL_ASSETS = [
   './',
   './index.html',
   './manifest.webmanifest',
   './assets/index.css',
   './assets/index.js',
-  './icons/icon-192.svg',
-  './icons/icon-512.svg'
+  './favicon.ico',
+  './favicon-32x32.png',
+  './favicon-16x16.png',
+  './apple-touch-icon.png',
+  './android-chrome-192x192.png',
+  './android-chrome-512x512.png',
+  './icons/icon-192.png',
+  './icons/icon-512.png'
 ];
 
 self.addEventListener('install', (event) => {

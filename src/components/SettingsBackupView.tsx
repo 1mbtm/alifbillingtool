@@ -75,14 +75,14 @@ export function SettingsBackupView({
     e.preventDefault();
     try {
       await updateShopSettings({
-        shopName: shopName.trim() || 'ALiF Ladies Tailor',
+        shopName: shopName.trim() || 'alif.',
         tagline: tagline.trim(),
-        address: address.trim(),
+        address: address.trim() || 'Daal Kuan College Road',
         city: city.trim() || 'Sahibganj',
         state: state.trim() || 'Jharkhand',
-        pinCode: pinCode.trim(),
-        phone: phone.trim(),
-        whatsappNumber: whatsappNumber.trim(),
+        pinCode: pinCode.trim() || '816109',
+        phone: phone.trim() || '7250470009',
+        whatsappNumber: whatsappNumber.trim() || '917250470009',
         invoicePrefix: invoicePrefix.trim().toUpperCase() || 'ALIF',
         nextInvoiceSequence: Math.max(1, parseInt(nextInvoiceSequence, 10) || 1),
         defaultPaymentMethod,
@@ -275,7 +275,7 @@ export function SettingsBackupView({
             rows={4}
             value={jsonImportText}
             onChange={(e) => handleValidateImportText(e.target.value)}
-            placeholder='Paste backup JSON here ({"schemaVersion":2,"app":"ALIF_BILLING_PWA",...})'
+            aria-label="Backup JSON"
             data-testid="textarea-restore-json"
             className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
           />

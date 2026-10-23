@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   DiscountType,
   Invoice,
+  ItemPhotoRecord,
   PaymentMethod,
   PaymentRecord,
   PaymentRecordType,
@@ -27,6 +28,10 @@ import {
   recordInvoicePayment,
   reopenAndUpdateInvoice
 } from '../services/billingService';
+import {
+  getItemPhotosMap,
+  saveItemPhotoFromFile
+} from '../services/billingService';
 import { ConfirmDialog, StatusBadge } from './StatusBadge';
 
 interface InvoiceDetailModalProps {
@@ -46,6 +51,7 @@ export function InvoiceDetailModal({
 }: InvoiceDetailModalProps) {
   const [invoice, setInvoice] = useState<Invoice | null>(null);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
+  const [photosMap, setPhotosMap] = useState<Record<string, ItemPhotoRecord>>({});
   const [loading, setLoading] = useState(true);
 
   const [payType, setPayType] = useState<PaymentRecordType>('payment');
@@ -69,6 +75,8 @@ export function InvoiceDetailModal({
       unitPriceRupees: string;
       costPricePaise?: number;
       notes: string;
+      photoId?: string;
+      photoDataUrl?: string;
     }[]
   >([]);
   const [editDiscountType, setEditDiscountType] = useState<DiscountType>('flat');
@@ -79,6 +87,10 @@ export function InvoiceDetailModal({
   const [showCancelPrompt, setShowCancelPrompt] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [confirmReopenOpen, setConfirmReopenOpen] = useState(false);
+  const [previewPhoto, setPreviewPhoto] = useState<{
+    itemName: string;
+    dataUrl: string;
+  } | null>(null);
 
   async function loadDetails() {
     setLoading(true);
@@ -86,6 +98,13 @@ export function InvoiceDetailModal({
       const data = await getInvoiceDetails(invoiceId);
       setInvoice(data.invoice);
       setPayments(data.payments);
+
+      const photoIds = data.invoice.items
+        .map((it) => it.photoId)
+        .filter((id): id is string => Boolean(id));
+      const loadedPhotos = await getItemPhotosMap(photoIds);
+      setPhotosMap(loadedPhotos);
+
       if (data.invoice.balancePaise > 0) {
         setPayAmountRupees(paiseToRupeesString(data.invoice.balancePaise));
       } else {
@@ -101,7 +120,9 @@ export function InvoiceDetailModal({
           unit: it.unit,
           unitPriceRupees: paiseToRupeesString(it.unitPricePaise),
           costPricePaise: it.costPricePaise,
-          notes: it.notes || ''
+          notes: it.notes || '',
+          photoId: it.photoId,
+          photoDataUrl: it.photoId ? loadedPhotos[it.photoId]?.dataUrl : undefined
         }))
       );
       setEditDiscountType(data.invoice.discountType);
@@ -126,11 +147,46 @@ export function InvoiceDetailModal({
   if (loading || !invoice) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-        <div className="bg-white border border-black p-6 text-xs uppercase tracking-widest font-semibold">
+        <div className="bg-white border border-black p-6 text-base font-semibold">
           Loading invoice receipt...
         </div>
       </div>
     );
+  }
+
+  async function handleEditLinePhoto(idx: number, file: File | undefined) {
+    if (!file || !invoice) return;
+    const target = editLines[idx];
+    if (!target) return;
+    try {
+      const savedPhoto = await saveItemPhotoFromFile({
+        file,
+        lineItemId: target.id,
+        invoiceId: invoice.id,
+        existingPhotoId: target.photoId
+      });
+      const copy = [...editLines];
+      copy[idx] = {
+        ...copy[idx],
+        photoId: savedPhoto.id,
+        photoDataUrl: savedPhoto.dataUrl
+      };
+      setEditLines(copy);
+      setPhotosMap((prev) => ({ ...prev, [savedPhoto.id]: savedPhoto }));
+      onNotify(`Attached photo to ${target.name || 'item'}`);
+    } catch (err: any) {
+      onNotify(err?.message || 'Could not attach photo', true);
+    }
+  }
+
+  function handleRemoveEditLinePhoto(idx: number) {
+    const copy = [...editLines];
+    copy[idx] = {
+      ...copy[idx],
+      photoId: undefined,
+      photoDataUrl: undefined
+    };
+    setEditLines(copy);
   }
 
   async function handleRecordPayment(e: React.FormEvent) {
@@ -204,7 +260,8 @@ export function InvoiceDetailModal({
         unit: l.unit.trim() || 'pc',
         unitPricePaise: rupeesToPaise(l.unitPriceRupees || '0'),
         costPricePaise: l.costPricePaise,
-        notes: l.notes.trim() || undefined
+        notes: l.notes.trim() || undefined,
+        photoId: l.photoId
       }));
       const discVal =
         editDiscountType === 'flat'
@@ -220,6 +277,11 @@ export function InvoiceDetailModal({
         notes: editNotes
       });
       setInvoice(updated);
+      const photoIds = updated.items
+        .map((it) => it.photoId)
+        .filter((id): id is string => Boolean(id));
+      const refreshedPhotos = await getItemPhotosMap(photoIds);
+      setPhotosMap(refreshedPhotos);
       setIsEditingBill(false);
       setConfirmReopenOpen(false);
       onUpdated();
@@ -258,12 +320,12 @@ export function InvoiceDetailModal({
               {settings.shopName} • {settings.city}, {settings.state}
             </div>
             <div className="flex items-center gap-2.5 flex-wrap">
-              <span className="font-mono text-base sm:text-lg font-semibold tracking-wider text-alif-black">
+              <span className="font-mono text-lg sm:text-xl font-semibold text-alif-black">
                 {invoice.invoiceNumber}
               </span>
               <StatusBadge status={invoice.status} />
             </div>
-            <p className="text-[11px] font-mono text-alif-grey">
+            <p className="text-sm font-mono text-alif-grey">
               Issued: {invoice.invoiceDate}
               {invoice.collectionDate ? `  |  Collection: ${invoice.collectionDate}` : ''}
             </p>
@@ -272,7 +334,7 @@ export function InvoiceDetailModal({
             type="button"
             onClick={onClose}
             data-testid="btn-close-invoice-modal"
-            className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] border border-alif-border text-alif-black hover:border-black"
+            className="px-3.5 py-2 text-sm font-semibold border border-alif-border text-alif-black hover:border-black"
           >
             Close ✕
           </button>
@@ -280,9 +342,9 @@ export function InvoiceDetailModal({
 
         {/* Cancelled Notice */}
         {invoice.status === 'Cancelled' && (
-          <div className="bg-alif-muted border border-black p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-            <div className="text-xs text-alif-black">
-              <span className="font-semibold uppercase tracking-wider">Cancelled Bill:</span>{' '}
+          <div className="bg-alif-muted border border-black p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="text-sm text-alif-black">
+              <span className="font-semibold">Cancelled Bill:</span>{' '}
               {invoice.cancelReason || 'Cancelled'}
               {invoice.cancelledAt && (
                 <span className="text-alif-grey font-mono ml-1.5">
@@ -294,36 +356,36 @@ export function InvoiceDetailModal({
               type="button"
               onClick={() => setConfirmReopenOpen(true)}
               data-testid="btn-reopen-invoice"
-              className="px-3.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] bg-white text-alif-black border border-black hover:bg-stone-50 shrink-0"
+              className="px-4 py-2 text-sm font-semibold bg-white text-alif-black border border-black hover:bg-stone-50 shrink-0"
             >
               Reopen Invoice
             </button>
           </div>
         )}
 
-        {/* Understated PDF, Print & Messaging Action Bar */}
-        <div className="border-t border-b border-alif-border py-3.5 space-y-2.5">
+        {/* PDF, Print & Messaging Action Bar */}
+        <div className="border-t border-b border-alif-border py-4 space-y-3">
           <div className="editorial-label">Receipt Export &amp; Client Dispatch</div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2.5">
             <button
               type="button"
               onClick={handleDownloadPdf}
               data-testid="btn-download-pdf"
-              className="px-3.5 py-2 bg-alif-black text-white text-[10px] font-semibold uppercase tracking-[0.15em] hover:bg-zinc-800"
+              className="px-4 py-2.5 bg-alif-black text-white text-sm font-semibold hover:bg-zinc-800"
             >
               Download PDF
             </button>
             <button
               type="button"
               onClick={() => printInvoiceReceipt(invoice, payments, settings)}
-              className="px-3.5 py-2 bg-white text-alif-black border border-alif-border text-[10px] font-semibold uppercase tracking-[0.15em] hover:border-black"
+              className="px-4 py-2.5 bg-white text-alif-black border border-alif-border text-sm font-semibold hover:border-black"
             >
               Print Receipt
             </button>
             <button
               type="button"
               onClick={handleNativeShare}
-              className="px-3.5 py-2 bg-white text-alif-black border border-alif-border text-[10px] font-semibold uppercase tracking-[0.15em] hover:border-black"
+              className="px-4 py-2.5 bg-white text-alif-black border border-alif-border text-sm font-semibold hover:border-black"
             >
               Share PDF
             </button>
@@ -332,27 +394,27 @@ export function InvoiceDetailModal({
               target="_blank"
               rel="noopener noreferrer"
               data-testid="link-whatsapp-share"
-              className="px-3.5 py-2 bg-alif-charcoal text-white text-[10px] font-semibold uppercase tracking-[0.15em] hover:bg-black inline-flex items-center"
+              className="px-4 py-2.5 bg-alif-charcoal text-white text-sm font-semibold hover:bg-black inline-flex items-center min-h-[44px]"
             >
               WhatsApp Summary
             </a>
             <a
               href={smsUrl}
               data-testid="link-sms-share"
-              className="px-3.5 py-2 bg-white text-alif-black border border-alif-border text-[10px] font-semibold uppercase tracking-[0.15em] hover:border-black inline-flex items-center"
+              className="px-4 py-2.5 bg-white text-alif-black border border-alif-border text-sm font-semibold hover:border-black inline-flex items-center min-h-[44px]"
             >
               SMS Summary
             </a>
           </div>
-          <p className="text-[10px] text-alif-grey">
+          <p className="text-sm text-alif-grey">
             WhatsApp and SMS actions prefill the client&apos;s number and invoice summary in your messaging app for manual review before sending.
           </p>
         </div>
 
         {/* Receipt Body: Client & Itemised Garment Table */}
         <div className="border border-alif-border">
-          <div className="bg-stone-50 px-4 py-2.5 border-b border-alif-border flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs">
+          <div className="bg-stone-50 px-4 py-3 border-b border-alif-border flex flex-wrap items-center justify-between gap-2">
+            <div className="text-base">
               <span className="editorial-label mr-2">Client</span>
               <span className="font-semibold text-alif-black">{invoice.customerName}</span>
               <span className="font-mono text-alif-grey ml-2">{invoice.customerPhone}</span>
@@ -360,7 +422,8 @@ export function InvoiceDetailModal({
             <button
               type="button"
               onClick={() => setIsEditingBill(!isEditingBill)}
-              className="text-[10px] font-semibold uppercase tracking-[0.14em] text-alif-black underline"
+              data-testid="btn-toggle-edit-bill"
+              className="text-sm font-semibold text-alif-black underline px-2 py-1"
             >
               {isEditingBill ? 'Cancel Editing' : 'Edit / Reopen Bill Items'}
             </button>
@@ -369,56 +432,89 @@ export function InvoiceDetailModal({
           {!isEditingBill ? (
             <div className="p-4 space-y-4">
               <div className="divide-y">
-                {invoice.items.map((item, idx) => (
-                  <div key={item.id} className="py-2.5 flex items-start justify-between gap-3 text-xs">
-                    <div>
-                      <div className="font-medium text-alif-black">
-                        {idx + 1}. {item.name}{' '}
-                        <span className="text-[9px] uppercase tracking-widest text-alif-grey ml-1.5">
-                          [{item.category}]
-                        </span>
+                {invoice.items.map((item, idx) => {
+                  const photoRec = item.photoId ? photosMap[item.photoId] : undefined;
+                  return (
+                    <div
+                      key={item.id}
+                      className="py-3 flex items-start justify-between gap-3 text-base"
+                    >
+                      <div className="flex items-start gap-3 min-w-0">
+                        {photoRec && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setPreviewPhoto({
+                                itemName: item.name,
+                                dataUrl: photoRec.dataUrl
+                              })
+                            }
+                            data-testid={`detail-item-photo-btn-${idx}`}
+                            className="p-0.5 border border-black bg-white shrink-0"
+                            title="View attached item photo"
+                          >
+                            <img
+                              src={photoRec.dataUrl}
+                              alt={item.name}
+                              data-testid={`detail-item-thumb-${idx}`}
+                              className="w-12 h-12 object-cover block"
+                            />
+                          </button>
+                        )}
+                        <div className="min-w-0">
+                          <div className="font-medium text-alif-black">
+                            {idx + 1}. {item.name}{' '}
+                            <span className="text-sm text-alif-grey ml-1.5">
+                              [{item.category}]
+                            </span>
+                          </div>
+                          <div className="font-mono text-sm text-alif-grey mt-0.5">
+                            {item.quantity} {item.unit} × {formatINR(item.unitPricePaise)}
+                            {item.notes ? ` — ${item.notes}` : ''}
+                          </div>
+                        </div>
                       </div>
-                      <div className="font-mono text-[11px] text-alif-grey mt-0.5">
-                        {item.quantity} {item.unit} × {formatINR(item.unitPricePaise)}
-                        {item.notes ? ` — ${item.notes}` : ''}
+                      <div className="font-mono font-semibold text-alif-black shrink-0">
+                        {formatINR(item.lineTotalPaise)}
                       </div>
                     </div>
-                    <div className="font-mono font-semibold text-alif-black shrink-0">
-                      {formatINR(item.lineTotalPaise)}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               {invoice.notes && (
-                <div className="text-xs bg-stone-50 p-3 border-t border-b border-alif-border text-alif-charcoal">
+                <div className="text-sm bg-stone-50 p-3.5 border-t border-b border-alif-border text-alif-charcoal">
                   <span className="editorial-label mr-2">Notes:</span> {invoice.notes}
                 </div>
               )}
 
               {/* Financial Hierarchy Grid */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 border-t border-l border-alif-border text-xs">
-                <div className="p-3 border-r border-b border-alif-border">
+              <div className="grid grid-cols-2 sm:grid-cols-4 border-t border-l border-alif-border text-sm">
+                <div className="p-3.5 border-r border-b border-alif-border">
                   <div className="editorial-label">Subtotal</div>
-                  <div className="font-mono font-medium mt-1">{formatINR(invoice.subtotalPaise)}</div>
+                  <div className="font-mono font-medium text-base mt-1">
+                    {formatINR(invoice.subtotalPaise)}
+                  </div>
                 </div>
-                <div className="p-3 border-r border-b border-alif-border">
+                <div className="p-3.5 border-r border-b border-alif-border">
                   <div className="editorial-label">Discount</div>
-                  <div className="font-mono font-medium mt-1">- {formatINR(invoice.discountPaise)}</div>
+                  <div className="font-mono font-medium text-base mt-1">
+                    - {formatINR(invoice.discountPaise)}
+                  </div>
                 </div>
-                <div className="p-3 border-r border-b border-alif-border bg-stone-50">
+                <div className="p-3.5 border-r border-b border-alif-border bg-stone-50">
                   <div className="editorial-label">Final Total</div>
                   <div
-                    className="font-mono font-semibold text-sm text-alif-black mt-1"
+                    className="font-mono font-semibold text-base text-alif-black mt-1"
                     data-testid="detail-total"
                   >
                     {formatINR(invoice.totalPaise)}
                   </div>
                 </div>
-                <div className="p-3 border-r border-b border-alif-border bg-alif-muted">
+                <div className="p-3.5 border-r border-b border-alif-border bg-alif-muted">
                   <div className="editorial-label">Balance Due</div>
                   <div
-                    className="font-mono font-semibold text-sm text-alif-black mt-1"
+                    className="font-mono font-semibold text-base text-alif-black mt-1"
                     data-testid="detail-balance"
                   >
                     {formatINR(invoice.balancePaise)}
@@ -427,53 +523,117 @@ export function InvoiceDetailModal({
               </div>
             </div>
           ) : (
-            <div className="p-4 space-y-3 bg-stone-50">
+            <div className="p-4 space-y-4 bg-stone-50">
               <div className="editorial-subhead">
                 Edit Line Items &amp; Recalculate (Payment history preserved)
               </div>
               {editLines.map((line, idx) => (
                 <div
                   key={line.id}
-                  className="grid grid-cols-1 sm:grid-cols-4 gap-2 bg-white p-2.5 border border-alif-border"
+                  className="bg-white p-3.5 border border-alif-border space-y-3"
                 >
-                  <input
-                    type="text"
-                    value={line.name}
-                    onChange={(e) => {
-                      const copy = [...editLines];
-                      copy[idx] = { ...copy[idx], name: e.target.value };
-                      setEditLines(copy);
-                    }}
-                    className="px-2 py-1.5 text-xs border border-alif-border"
-                    placeholder="Item name"
-                  />
-                  <input
-                    type="number"
-                    min="0.1"
-                    step="any"
-                    value={line.quantity}
-                    onChange={(e) => {
-                      const copy = [...editLines];
-                      copy[idx] = { ...copy[idx], quantity: e.target.value };
-                      setEditLines(copy);
-                    }}
-                    className="px-2 py-1.5 text-xs font-mono border border-alif-border"
-                    placeholder="Qty"
-                  />
-                  <input
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={line.unitPriceRupees}
-                    onChange={(e) => {
-                      const copy = [...editLines];
-                      copy[idx] = { ...copy[idx], unitPriceRupees: e.target.value };
-                      setEditLines(copy);
-                    }}
-                    className="px-2 py-1.5 text-xs font-mono border border-alif-border"
-                    placeholder="Price (₹)"
-                  />
-                  <div className="flex items-center gap-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        id={`edit-photo-file-${line.id}`}
+                        data-testid={`edit-input-photo-${idx}`}
+                        onChange={(e) => handleEditLinePhoto(idx, e.target.files?.[0])}
+                        className="hidden"
+                      />
+                      {line.photoDataUrl ? (
+                        <div className="flex items-center gap-2">
+                          <img
+                            src={line.photoDataUrl}
+                            alt={line.name}
+                            data-testid={`edit-thumb-photo-${idx}`}
+                            className="w-11 h-11 object-cover border border-black"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const el = document.getElementById(
+                                `edit-photo-file-${line.id}`
+                              ) as HTMLInputElement | null;
+                              el?.click();
+                            }}
+                            className="px-3 py-1.5 text-sm border border-alif-border bg-white"
+                          >
+                            Replace Photo
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveEditLinePhoto(idx)}
+                            className="px-3 py-1.5 text-sm border border-alif-border bg-white text-alif-grey"
+                          >
+                            Remove Photo
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const el = document.getElementById(
+                              `edit-photo-file-${line.id}`
+                            ) as HTMLInputElement | null;
+                            el?.click();
+                          }}
+                          className="px-3 py-1.5 text-sm border border-alif-border bg-stone-50"
+                        >
+                          + Attach Photo
+                        </button>
+                      )}
+                    </div>
+                    {editLines.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setEditLines(editLines.filter((_, i) => i !== idx))}
+                        className="px-3 py-1.5 text-sm text-alif-charcoal border border-alif-border"
+                      >
+                        Remove Item ✕
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+                    <input
+                      type="text"
+                      value={line.name}
+                      onChange={(e) => {
+                        const copy = [...editLines];
+                        copy[idx] = { ...copy[idx], name: e.target.value };
+                        setEditLines(copy);
+                      }}
+                      className="px-3 py-2 text-base border border-alif-border"
+                      aria-label="Item name"
+                    />
+                    <input
+                      type="number"
+                      min="0.1"
+                      step="any"
+                      value={line.quantity}
+                      onChange={(e) => {
+                        const copy = [...editLines];
+                        copy[idx] = { ...copy[idx], quantity: e.target.value };
+                        setEditLines(copy);
+                      }}
+                      className="px-3 py-2 text-base font-mono border border-alif-border"
+                      aria-label="Quantity"
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={line.unitPriceRupees}
+                      onChange={(e) => {
+                        const copy = [...editLines];
+                        copy[idx] = { ...copy[idx], unitPriceRupees: e.target.value };
+                        setEditLines(copy);
+                      }}
+                      className="px-3 py-2 text-base font-mono border border-alif-border"
+                      aria-label="Unit price"
+                    />
                     <input
                       type="text"
                       value={line.notes}
@@ -482,22 +642,13 @@ export function InvoiceDetailModal({
                         copy[idx] = { ...copy[idx], notes: e.target.value };
                         setEditLines(copy);
                       }}
-                      className="flex-1 px-2 py-1.5 text-xs border border-alif-border"
-                      placeholder="Note"
+                      className="px-3 py-2 text-base border border-alif-border"
+                      aria-label="Note"
                     />
-                    {editLines.length > 1 && (
-                      <button
-                        type="button"
-                        onClick={() => setEditLines(editLines.filter((_, i) => i !== idx))}
-                        className="px-2 py-1 text-xs text-alif-charcoal border border-alif-border"
-                      >
-                        ✕
-                      </button>
-                    )}
                   </div>
                 </div>
               ))}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block editorial-label mb-1">
                     Discount ({editDiscountType})
@@ -508,7 +659,7 @@ export function InvoiceDetailModal({
                     step="any"
                     value={editDiscountValue}
                     onChange={(e) => setEditDiscountValue(e.target.value)}
-                    className="w-full px-2.5 py-1.5 text-xs font-mono border border-alif-border bg-white"
+                    className="w-full px-3 py-2 text-base font-mono border border-alif-border bg-white"
                   />
                 </div>
                 <div>
@@ -517,7 +668,7 @@ export function InvoiceDetailModal({
                     type="date"
                     value={editCollectionDate}
                     onChange={(e) => setEditCollectionDate(e.target.value)}
-                    className="w-full px-2.5 py-1.5 text-xs font-mono border border-alif-border bg-white"
+                    className="w-full px-3 py-2 text-base font-mono border border-alif-border bg-white"
                   />
                 </div>
                 <div>
@@ -526,7 +677,7 @@ export function InvoiceDetailModal({
                     type="text"
                     value={editNotes}
                     onChange={(e) => setEditNotes(e.target.value)}
-                    className="w-full px-2.5 py-1.5 text-xs border border-alif-border bg-white"
+                    className="w-full px-3 py-2 text-base border border-alif-border bg-white"
                   />
                 </div>
               </div>
@@ -534,14 +685,15 @@ export function InvoiceDetailModal({
                 <button
                   type="button"
                   onClick={() => setIsEditingBill(false)}
-                  className="px-3.5 py-1.5 text-[10px] font-semibold uppercase tracking-widest border border-alif-border bg-white"
+                  className="px-4 py-2 text-sm font-semibold border border-alif-border bg-white"
                 >
                   Cancel
                 </button>
                 <button
                   type="button"
                   onClick={handleSaveEditedInvoice}
-                  className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest bg-alif-black text-white"
+                  data-testid="btn-save-edited-invoice"
+                  className="px-5 py-2 text-sm font-semibold bg-alif-black text-white"
                 >
                   Save Updated Bill
                 </button>
@@ -553,17 +705,17 @@ export function InvoiceDetailModal({
         {/* Record Payment, Refund or Correction */}
         <form
           onSubmit={handleRecordPayment}
-          className="border border-alif-border p-4 space-y-3.5 bg-stone-50"
+          className="border border-alif-border p-4 space-y-4 bg-stone-50"
         >
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-alif-border pb-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-alif-border pb-3">
             <h4 className="editorial-subhead">Record Payment, Refund or Correction</h4>
-            <div className="flex gap-1">
+            <div className="flex flex-wrap gap-1.5">
               {(['payment', 'refund', 'correction'] as const).map((t) => (
                 <button
                   key={t}
                   type="button"
                   onClick={() => setPayType(t)}
-                  className={`px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] border font-semibold ${
+                  className={`px-3 py-2 text-sm border font-semibold ${
                     payType === t
                       ? 'bg-alif-black text-white border-black'
                       : 'bg-white text-alif-charcoal border-alif-border'
@@ -575,24 +727,23 @@ export function InvoiceDetailModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             <div>
               <label className="block editorial-label mb-1">Amount (₹) *</label>
-              <div className="flex gap-1">
+              <div className="flex gap-1.5">
                 <input
                   type="number"
                   step="any"
                   value={payAmountRupees}
                   onChange={(e) => setPayAmountRupees(e.target.value)}
-                  placeholder="0"
                   data-testid="input-record-payment-amount"
-                  className="w-full px-2.5 py-1.5 text-xs font-mono border border-alif-border bg-white"
+                  className="w-full px-3 py-2 text-base font-mono border border-alif-border bg-white"
                 />
                 {payType === 'payment' && invoice.balancePaise > 0 && (
                   <button
                     type="button"
                     onClick={() => setPayAmountRupees(paiseToRupeesString(invoice.balancePaise))}
-                    className="px-2 py-1 text-[9px] uppercase tracking-wider font-semibold border border-alif-border bg-white hover:border-black shrink-0"
+                    className="px-3 py-2 text-sm font-semibold border border-alif-border bg-white hover:border-black shrink-0"
                   >
                     Full
                   </button>
@@ -606,7 +757,7 @@ export function InvoiceDetailModal({
                 value={payMethod}
                 onChange={(e) => setPayMethod(e.target.value as PaymentMethod)}
                 data-testid="select-record-payment-method"
-                className="w-full px-2.5 py-1.5 text-xs border border-alif-border bg-white"
+                className="w-full px-3 py-2 text-base border border-alif-border bg-white"
               >
                 <option value="cash">Cash</option>
                 <option value="upi">UPI</option>
@@ -621,7 +772,7 @@ export function InvoiceDetailModal({
                 type="date"
                 value={payDate}
                 onChange={(e) => setPayDate(e.target.value)}
-                className="w-full px-2.5 py-1.5 text-xs font-mono border border-alif-border bg-white"
+                className="w-full px-3 py-2 text-base font-mono border border-alif-border bg-white"
               />
             </div>
 
@@ -633,13 +784,8 @@ export function InvoiceDetailModal({
                 type="text"
                 value={payNote}
                 onChange={(e) => setPayNote(e.target.value)}
-                placeholder={
-                  payType === 'payment'
-                    ? 'Paid on collection'
-                    : 'Mandatory audit note'
-                }
                 data-testid="input-record-payment-note"
-                className="w-full px-2.5 py-1.5 text-xs border border-alif-border bg-white"
+                className="w-full px-3 py-2 text-base border border-alif-border bg-white"
               />
             </div>
           </div>
@@ -649,7 +795,7 @@ export function InvoiceDetailModal({
               type="submit"
               disabled={submittingPay}
               data-testid="btn-submit-payment"
-              className="px-4 py-2 bg-alif-black text-white text-[10px] font-semibold uppercase tracking-[0.16em] hover:bg-zinc-800"
+              className="px-5 py-2.5 bg-alif-black text-white text-sm font-semibold hover:bg-zinc-800"
             >
               {submittingPay
                 ? 'Saving...'
@@ -664,12 +810,12 @@ export function InvoiceDetailModal({
 
         {/* Chronological Payment Ledger */}
         <div className="border border-alif-border">
-          <div className="bg-stone-50 px-4 py-2.5 border-b border-alif-border flex items-center justify-between">
+          <div className="bg-stone-50 px-4 py-3 border-b border-alif-border flex items-center justify-between">
             <h4 className="editorial-subhead">
               Payment History ({payments.length})
             </h4>
             <span
-              className="text-xs font-mono font-semibold text-alif-black"
+              className="text-base font-mono font-semibold text-alif-black"
               data-testid="detail-net-paid"
             >
               Net Paid: {formatINR(invoice.paidPaise)}
@@ -677,26 +823,26 @@ export function InvoiceDetailModal({
           </div>
 
           {payments.length === 0 ? (
-            <div className="p-4 text-xs text-alif-grey text-center uppercase tracking-wider">
+            <div className="p-4 text-sm text-alif-grey text-center">
               No payments recorded yet
             </div>
           ) : (
             <div className="divide-y">
               {payments.map((p) => (
-                <div key={p.id} className="px-4 py-2.5 flex items-center justify-between text-xs">
+                <div key={p.id} className="px-4 py-3 flex items-center justify-between text-sm">
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="font-semibold uppercase tracking-wider text-alif-black">
+                      <span className="font-semibold text-alif-black">
                         {p.type}
                       </span>
-                      <span className="px-1.5 py-0.5 border border-alif-border text-[9px] uppercase tracking-wider text-alif-grey">
+                      <span className="px-2 py-0.5 border border-alif-border text-sm text-alif-grey">
                         {PAYMENT_METHOD_LABELS[p.method] || p.method}
                       </span>
                       <span className="font-mono text-alif-grey">{p.date}</span>
                     </div>
                     {p.note && <div className="text-alif-grey mt-0.5">{p.note}</div>}
                   </div>
-                  <div className="font-mono font-semibold text-alif-black">
+                  <div className="font-mono font-semibold text-base text-alif-black">
                     {p.type === 'refund' ? '- ' : '+ '}
                     {formatINR(Math.abs(p.amountPaise))}
                   </div>
@@ -714,29 +860,29 @@ export function InvoiceDetailModal({
                 type="button"
                 onClick={() => setShowCancelPrompt(true)}
                 data-testid="btn-open-cancel-invoice"
-                className="text-[10px] font-semibold uppercase tracking-[0.15em] text-alif-grey hover:text-alif-black underline"
+                className="text-sm font-semibold text-alif-grey hover:text-alif-black underline"
               >
                 Cancel This Invoice...
               </button>
             ) : (
-              <div className="w-full bg-stone-50 border border-black p-3.5 space-y-2.5">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-alif-black">
+              <div className="w-full bg-stone-50 border border-black p-4 space-y-3">
+                <div className="text-sm font-semibold text-alif-black">
                   Cancel Invoice {invoice.invoiceNumber} (Preserves historical ledger)
                 </div>
-                <div className="flex flex-col sm:flex-row gap-2">
+                <div className="flex flex-col sm:flex-row gap-2.5">
                   <input
                     type="text"
                     value={cancelReason}
                     onChange={(e) => setCancelReason(e.target.value)}
-                    placeholder="Enter mandatory cancellation reason..."
+                    aria-label="Cancellation reason"
                     data-testid="input-cancel-reason"
-                    className="flex-1 px-3 py-1.5 text-xs border border-alif-border bg-white"
+                    className="flex-1 px-3 py-2 text-base border border-alif-border bg-white"
                   />
                   <div className="flex gap-2">
                     <button
                       type="button"
                       onClick={() => setShowCancelPrompt(false)}
-                      className="px-3 py-1.5 text-[10px] uppercase tracking-widest border border-alif-border bg-white"
+                      className="px-4 py-2 text-sm border border-alif-border bg-white"
                     >
                       Back
                     </button>
@@ -744,7 +890,7 @@ export function InvoiceDetailModal({
                       type="button"
                       onClick={handleCancelInvoice}
                       data-testid="btn-confirm-cancel-invoice"
-                      className="px-4 py-1.5 text-[10px] font-semibold uppercase tracking-widest bg-alif-black text-white"
+                      className="px-4 py-2 text-sm font-semibold bg-alif-black text-white"
                     >
                       Confirm Cancel
                     </button>
@@ -763,6 +909,39 @@ export function InvoiceDetailModal({
           onConfirm={handleSaveEditedInvoice}
           onCancel={() => setConfirmReopenOpen(false)}
         />
+
+        {/* Photo Preview Dialog */}
+        {previewPhoto && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            role="dialog"
+            aria-modal="true"
+            data-testid="detail-modal-photo-preview"
+          >
+            <div className="bg-white border border-black max-w-md w-full p-4 space-y-4">
+              <div className="flex items-center justify-between border-b border-alif-border pb-3">
+                <h4 className="text-base font-semibold text-alif-black truncate">
+                  {previewPhoto.itemName}
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => setPreviewPhoto(null)}
+                  data-testid="btn-close-detail-photo-preview"
+                  className="px-3 py-1.5 text-sm border border-alif-border text-alif-black hover:border-black"
+                >
+                  Close ✕
+                </button>
+              </div>
+              <div className="bg-stone-50 border border-alif-border p-2 flex items-center justify-center">
+                <img
+                  src={previewPhoto.dataUrl}
+                  alt={previewPhoto.itemName}
+                  className="max-h-80 w-auto object-contain"
+                />
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

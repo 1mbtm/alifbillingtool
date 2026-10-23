@@ -133,15 +133,12 @@ export function CatalogueView({
       >
         <div className="flex items-baseline justify-between gap-2">
           <div>
-            <div className="editorial-label">Atelier Rate Card</div>
+            <div className="editorial-label">Atelier Catalogue</div>
             <h2 className="font-serif text-xl uppercase tracking-[0.18em] text-alif-black font-normal mt-0.5">
               {editingItem
                 ? `Edit Item: ${editingItem.name}`
-                : 'Catalogue & Pricing'}
+                : 'Catalogue & Services'}
             </h2>
-            <p className="text-[11px] text-alif-grey mt-0.5">
-              Default prices and ranges remain configurable per invoice.
-            </p>
           </div>
           {editingItem && (
             <button
@@ -163,7 +160,6 @@ export function CatalogueView({
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Bridal Astar Blouse"
               data-testid="cat-form-name"
               className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
             />
@@ -178,20 +174,19 @@ export function CatalogueView({
               className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
             >
               <option value="service">Tailoring Service</option>
-              <option value="product">Product / Material (Fabric, Lace, Latkan, Dori)</option>
+              <option value="product">Product / Material</option>
               <option value="custom">Custom Item</option>
             </select>
           </div>
 
           <div>
             <label className="block editorial-label mb-1">
-              Unit (pc, set, mtr, pair, saree)
+              Unit
             </label>
             <input
               type="text"
               value={unit}
               onChange={(e) => setUnit(e.target.value)}
-              placeholder="pc"
               data-testid="cat-form-unit"
               className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
             />
@@ -200,41 +195,38 @@ export function CatalogueView({
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div>
-            <label className="block editorial-label mb-1">Default Rate (₹) *</label>
+            <label className="block editorial-label mb-1">Rate (₹)</label>
             <input
               type="number"
               min="0"
               step="any"
               value={defaultPriceRupees}
               onChange={(e) => setDefaultPriceRupees(e.target.value)}
-              placeholder="450"
               data-testid="cat-form-price"
               className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
             />
           </div>
 
           <div>
-            <label className="block editorial-label mb-1">Min Range (₹)</label>
+            <label className="block editorial-label mb-1">Min Rate (₹)</label>
             <input
               type="number"
               min="0"
               step="any"
               value={minPriceRupees}
               onChange={(e) => setMinPriceRupees(e.target.value)}
-              placeholder="Optional"
               className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
             />
           </div>
 
           <div>
-            <label className="block editorial-label mb-1">Max Range (₹)</label>
+            <label className="block editorial-label mb-1">Max Rate (₹)</label>
             <input
               type="number"
               min="0"
               step="any"
               value={maxPriceRupees}
               onChange={(e) => setMaxPriceRupees(e.target.value)}
-              placeholder="Optional"
               className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
             />
           </div>
@@ -247,7 +239,6 @@ export function CatalogueView({
               step="any"
               value={costPriceRupees}
               onChange={(e) => setCostPriceRupees(e.target.value)}
-              placeholder="Optional"
               data-testid="cat-form-cost"
               className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
             />
@@ -255,15 +246,17 @@ export function CatalogueView({
         </div>
 
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <input
-            type="text"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="Optional specification note..."
-            className="flex-1 px-3 py-2 text-xs border border-alif-border bg-white"
-          />
+          <div className="flex-1">
+            <label className="block editorial-label mb-1">Description (Optional)</label>
+            <input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
+            />
+          </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 pt-2 sm:pt-4">
             <label className="inline-flex items-center gap-2 text-xs uppercase tracking-wider text-alif-charcoal">
               <input
                 type="checkbox"
@@ -314,7 +307,8 @@ export function CatalogueView({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search catalogue..."
+              placeholder="Search"
+              aria-label="Search catalogue"
               className="px-3 py-1.5 text-xs border border-alif-border bg-white"
             />
             <button
@@ -348,21 +342,6 @@ export function CatalogueView({
                 {item.description && (
                   <p className="text-xs text-alif-grey">{item.description}</p>
                 )}
-                <div className="flex flex-wrap gap-4 text-xs text-alif-charcoal font-mono pt-0.5">
-                  <span>
-                    Default: <strong>{formatINR(item.defaultPricePaise)}</strong> / {item.unit}
-                  </span>
-                  {item.minPricePaise !== undefined && item.maxPricePaise !== undefined && (
-                    <span className="text-alif-grey">
-                      Range: {formatINR(item.minPricePaise)}–{formatINR(item.maxPricePaise)}
-                    </span>
-                  )}
-                  {item.costPricePaise !== undefined && (
-                    <span className="text-alif-grey">
-                      Cost: {formatINR(item.costPricePaise)}
-                    </span>
-                  )}
-                </div>
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
@@ -372,7 +351,7 @@ export function CatalogueView({
                   data-testid={`btn-edit-${item.id}`}
                   className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] border border-alif-border bg-white hover:border-black"
                 >
-                  Edit Price / Details
+                  Edit Details
                 </button>
                 <button
                   type="button"
@@ -390,7 +369,7 @@ export function CatalogueView({
       <ConfirmDialog
         open={confirmResetOpen}
         title="Restore Default Tailoring Catalogue?"
-        message="This will restore the default ALiF Ladies Tailor items (astar blouse, plain blouse, fall & pico, suit, kurti, alter, Patiala, palazzo, gharara, sharara, frock, lehenga, fabric, lace, latkan, dori, and custom item) while keeping any custom items you added."
+        message="This will restore the default ALiF Ladies Tailor items while keeping any custom items you added."
         confirmLabel="Restore Defaults"
         onConfirm={async () => {
           await resetDefaultCatalogue();

@@ -30,7 +30,7 @@ export function DashboardView({
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
           <div className="space-y-1">
             <div className="editorial-label">
-              Sahibganj, Jharkhand — {metrics.todayDate}
+              Daal Kuan College Road, Sahibganj — {metrics.todayDate}
             </div>
             <h2 className="font-serif text-xl sm:text-2xl uppercase tracking-[0.18em] text-alif-black font-normal">
               Atelier Billing &amp; Ledger

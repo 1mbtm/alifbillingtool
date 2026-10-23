@@ -26,14 +26,14 @@ import { ReportsView } from './components/ReportsView';
 import { SettingsBackupView } from './components/SettingsBackupView';
 import { InvoiceDetailModal } from './components/InvoiceDetailModal';
 
-const NAV_ITEMS: { id: NavTab; label: string; shortLabel: string }[] = [
-  { id: 'dashboard', label: 'Overview', shortLabel: 'Home' },
-  { id: 'create-bill', label: '+ New Bill', shortLabel: '+ Bill' },
-  { id: 'invoices', label: 'Invoices', shortLabel: 'Bills' },
-  { id: 'customers', label: 'Clients', shortLabel: 'Clients' },
-  { id: 'catalogue', label: 'Catalogue', shortLabel: 'Items' },
-  { id: 'reports', label: 'Reports', shortLabel: 'Reports' },
-  { id: 'settings', label: 'Settings', shortLabel: 'Shop' }
+const NAV_ITEMS: { id: NavTab; label: string }[] = [
+  { id: 'dashboard', label: 'Overview' },
+  { id: 'create-bill', label: '+ New Bill' },
+  { id: 'invoices', label: 'Invoices' },
+  { id: 'customers', label: 'Clients' },
+  { id: 'catalogue', label: 'Catalogue' },
+  { id: 'reports', label: 'Reports' },
+  { id: 'settings', label: 'Settings' }
 ];
 
 export default function App() {
@@ -56,9 +56,6 @@ export default function App() {
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [preselectedCustomer, setPreselectedCustomer] = useState<Customer | null>(null);
   const [toast, setToast] = useState<{ message: string; isError: boolean } | null>(null);
-  const [isOnline, setIsOnline] = useState<boolean>(
-    typeof navigator !== 'undefined' ? navigator.onLine : true
-  );
   const [dbError, setDbError] = useState<string | null>(null);
 
   function showNotification(message: string, isError = false) {
@@ -96,60 +93,26 @@ export default function App() {
 
   useEffect(() => {
     refreshAllData();
-    const handleOnline = () => setIsOnline(true);
-    const handleOffline = () => setIsOnline(false);
-    window.addEventListener('online', handleOnline);
-    window.addEventListener('offline', handleOffline);
-    return () => {
-      window.removeEventListener('online', handleOnline);
-      window.removeEventListener('offline', handleOffline);
-    };
   }, []);
 
   return (
-    <div className="min-h-screen bg-alif-bg text-alif-charcoal flex flex-col pb-20 md:pb-10">
-      {/* Editorial Minimalist Masthead */}
-      <header className="sticky top-0 z-30 bg-alif-bg border-b border-black no-print">
-        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-3">
-          <div
+    <div className="min-h-screen bg-alif-bg text-alif-charcoal flex flex-col pb-8 md:pb-10">
+      {/* Sticky Top Header & Navigation */}
+      <div className="sticky top-0 z-30 bg-alif-bg border-b border-black no-print">
+        <header
+          data-testid="app-header"
+          className="max-w-5xl mx-auto px-4 sm:px-6 h-14 flex items-center"
+        >
+          <span
             onClick={() => setActiveTab('dashboard')}
-            className="flex items-baseline gap-3 cursor-pointer min-w-0"
+            data-testid="brand-wordmark"
+            className="font-ubuntu text-xl tracking-tight text-alif-black font-medium lowercase cursor-pointer"
           >
-            <span className="font-serif text-lg sm:text-xl tracking-[0.25em] uppercase text-alif-black font-normal shrink-0">
-              ALiF
-            </span>
-            <div className="min-w-0">
-              <h1 className="text-[10px] sm:text-[11px] uppercase tracking-[0.18em] text-alif-charcoal font-medium truncate">
-                {settings.shopName}
-              </h1>
-              <p className="text-[9px] uppercase tracking-[0.15em] text-alif-grey truncate">
-                {settings.city}, {settings.state} • INR (₹)
-              </p>
-            </div>
-          </div>
+            alif.
+          </span>
+        </header>
 
-          <div className="flex items-center gap-2.5 shrink-0">
-            <span
-              data-testid="status-offline-badge"
-              className="px-2 py-1 text-[9px] font-semibold uppercase tracking-[0.15em] border border-alif-border text-alif-grey bg-white"
-            >
-              {isOnline ? 'Offline-Ready' : 'Offline Mode'}
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                setPreselectedCustomer(null);
-                setActiveTab('create-bill');
-              }}
-              data-testid="header-new-bill-btn"
-              className="px-3.5 py-2 bg-alif-black text-white text-[10px] font-semibold uppercase tracking-[0.16em] hover:bg-zinc-800 transition"
-            >
-              + New Bill
-            </button>
-          </div>
-        </div>
-
-        {/* Minimalist Hairline Navigation Bar */}
+        {/* Top Navigation Bar (Preserved Separately) */}
         <nav
           aria-label="Primary Navigation"
           className="max-w-5xl mx-auto px-4 sm:px-6 border-t border-alif-border overflow-x-auto bg-white"
@@ -159,9 +122,14 @@ export default function App() {
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => {
+                  if (item.id === 'create-bill') {
+                    setPreselectedCustomer(null);
+                  }
+                  setActiveTab(item.id);
+                }}
                 data-testid={`nav-${item.id}`}
-                className={`px-3 py-2.5 text-[10px] uppercase tracking-[0.16em] whitespace-nowrap border-b-2 transition ${
+                className={`px-3.5 py-2.5 text-sm whitespace-nowrap border-b-2 transition min-h-[44px] ${
                   activeTab === item.id
                     ? 'border-black text-alif-black font-semibold'
                     : 'border-transparent text-alif-grey hover:text-alif-black'
@@ -172,15 +140,15 @@ export default function App() {
             ))}
           </div>
         </nav>
-      </header>
+      </div>
 
-      {/* Restrained Monochrome Status Toast */}
+      {/* Restrained Monochrome Status Toast (Non-obscuring top banner) */}
       {toast && (
-        <div className="fixed bottom-14 md:bottom-6 right-4 left-4 sm:left-auto sm:max-w-sm z-50 no-print">
+        <div className="max-w-5xl mx-auto w-full px-4 sm:px-6 pt-3 no-print">
           <div
             role="status"
             data-testid="toast-banner"
-            className={`px-4 py-3 border text-[11px] uppercase tracking-[0.12em] font-medium flex items-center justify-between gap-3 ${
+            className={`px-4 py-2.5 border text-sm font-medium flex items-center justify-between gap-3 ${
               toast.isError
                 ? 'bg-alif-charcoal text-white border-black'
                 : 'bg-alif-black text-white border-black'
@@ -190,7 +158,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setToast(null)}
-              className="text-zinc-300 hover:text-white font-semibold"
+              className="text-zinc-300 hover:text-white font-semibold px-2 py-1"
             >
               ✕
             </button>
@@ -201,13 +169,13 @@ export default function App() {
       {/* Database Error Notice */}
       {dbError && (
         <div className="max-w-5xl mx-auto w-full px-4 sm:px-6 mt-4">
-          <div className="bg-white border border-black text-alif-black p-3 text-xs uppercase tracking-wider">
+          <div className="bg-white border border-black text-alif-black p-4 text-sm">
             Database Error: {dbError}
           </div>
         </div>
       )}
 
-      {/* Main Content Area */}
+      {/* Main Content Area (18px horizontal padding on mobile, 24px on desktop) */}
       <main className="max-w-5xl mx-auto w-full px-4 sm:px-6 py-6 flex-1">
         {activeTab === 'dashboard' && (
           <DashboardView
@@ -282,29 +250,6 @@ export default function App() {
           />
         )}
       </main>
-
-      {/* Mobile Bottom Navigation Bar (360px–430px One-Handed Reach) */}
-      <nav
-        aria-label="Mobile Bottom Navigation"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-white border-t border-black no-print"
-      >
-        <div className="grid grid-cols-7 h-12 divide-x">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setActiveTab(item.id)}
-              className={`flex flex-col items-center justify-center text-[9px] uppercase tracking-[0.08em] font-semibold px-0.5 transition ${
-                activeTab === item.id
-                  ? 'bg-alif-black text-white'
-                  : 'text-alif-charcoal hover:bg-alif-muted'
-              }`}
-            >
-              <span className="truncate w-full text-center">{item.shortLabel}</span>
-            </button>
-          ))}
-        </div>
-      </nav>
 
       {/* Invoice Detail, Receipt & Payment Modal */}
       {selectedInvoiceId && (

@@ -86,7 +86,7 @@ export function generateInvoicePdfBytes(
 
   // 1. Header Banner (Charcoal/Black minimal premium header)
   drawRect(margin, 36, contentWidth, 74, [0.05, 0.05, 0.06]);
-  drawText(settings.shopName || 'ALiF Ladies Tailor', margin + 18, 62, {
+  drawText(settings.shopName || 'alif.', margin + 18, 62, {
     font: 'F2',
     size: 20,
     color: [0.97, 0.96, 0.95]
@@ -301,12 +301,12 @@ export function generateInvoicePdfBytes(
   const footerY = Math.max(totalsY + 36, leftY + 36, 755);
   drawLine(margin, footerY, pageWidth - margin, footerY, [0.15, 0.16, 0.18], 1);
   drawText(
-    settings.receiptFooter || 'Thank you for choosing ALiF Ladies Tailor, Sahibganj.',
+    settings.receiptFooter || 'Thank you for choosing alif., Sahibganj.',
     margin,
     footerY + 16,
     { size: 8.5, color: [0.35, 0.37, 0.40] }
   );
-  drawText('Authorised Signatory — ALiF Ladies Tailor', pageWidth - margin, footerY + 32, {
+  drawText('Authorised Signatory — alif.', pageWidth - margin, footerY + 32, {
     font: 'F2',
     size: 9,
     align: 'right'

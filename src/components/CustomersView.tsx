@@ -135,7 +135,6 @@ export function CustomersView({
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Farzana Begum"
               data-testid="cust-form-name"
               className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
             />
@@ -147,19 +146,17 @@ export function CustomersView({
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              placeholder="e.g. 9431122334"
               data-testid="cust-form-phone"
               className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
             />
           </div>
 
           <div>
-            <label className="block editorial-label mb-1">Measurements / Notes</label>
+            <label className="block editorial-label mb-1">Notes (Optional)</label>
             <input
               type="text"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="e.g. Blouse length 14.5, cotton astar"
               data-testid="cust-form-notes"
               className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
             />
@@ -184,15 +181,13 @@ export function CustomersView({
             <h3 className="editorial-subhead">
               Client Directory ({filteredCustomers.length})
             </h3>
-            <p className="text-[11px] text-alif-grey mt-0.5">
-              Search by name or phone number to inspect ledger and past bills
-            </p>
           </div>
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search name or phone..."
+            placeholder="Search"
+            aria-label="Search customers"
             data-testid="input-search-customers"
             className="px-3 py-2 text-xs border border-alif-border bg-white w-full sm:w-64"
           />

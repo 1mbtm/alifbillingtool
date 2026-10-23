@@ -2,14 +2,14 @@ import { CatalogueItem, ShopSettings } from '../types/billing';
 
 export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   id: 'default',
-  shopName: 'ALiF Ladies Tailor',
+  shopName: 'alif.',
   tagline: 'Bespoke Ladies Tailoring, Bridal & Boutique Finishing',
-  address: 'Station Road, Near Chowk Bazar',
+  address: 'Daal Kuan College Road',
   city: 'Sahibganj',
   state: 'Jharkhand',
   pinCode: '816109',
-  phone: '+91 94311 00000',
-  whatsappNumber: '919431100000',
+  phone: '7250470009',
+  whatsappNumber: '917250470009',
   currencyCode: 'INR',
   currencySymbol: '₹',
   invoicePrefix: 'ALIF',
@@ -19,7 +19,7 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   taxRatePercent: 0,
   defaultPaymentMethod: 'cash',
   enabledPaymentMethods: ['cash', 'upi', 'bank_transfer', 'other'],
-  receiptFooter: 'Thank you for choosing ALiF Ladies Tailor, Sahibganj. Please bring this bill at the time of garment collection.',
+  receiptFooter: 'Thank you for choosing alif., Sahibganj. Please bring this bill at the time of garment collection.',
   updatedAt: '2026-10-18T00:00:00.000Z'
 };
 
