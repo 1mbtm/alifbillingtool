@@ -1,0 +1,26 @@
+{
+  "name": "ALiF Ladies Tailor Billing",
+  "short_name": "ALiF Billing",
+  "description": "Offline-first tailoring billing, customer ledger, catalogue & receipt generator for ALiF Ladies Tailor, Sahibganj, Jharkhand.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#F7F6F2",
+  "theme_color": "#0B0B0D",
+  "categories": ["business", "finance", "productivity"],
+  "icons": [
+    {
+      "src": "./icons/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icons/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
