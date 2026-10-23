@@ -15,21 +15,26 @@ import {
   rupeesToPaise
 } from '../utils/currency';
 import {
+  buildShareBillText,
   buildSmsShareUrl,
   buildWhatsAppShareUrl,
+  buildWhatsAppUrlWithCustomText,
+  downloadBillImage,
   downloadInvoicePdf,
+  GeneratedBillImage,
+  generateInvoiceBillImage,
   printInvoiceReceipt,
+  shareBillImageAndText,
+  ShareBillOutcome,
   shareInvoicePdf
 } from '../utils/pdf';
 import {
   cancelInvoice,
   getInvoiceDetails,
+  getItemPhotosMap,
   getTodayIsoDate,
   recordInvoicePayment,
-  reopenAndUpdateInvoice
-} from '../services/billingService';
-import {
-  getItemPhotosMap,
+  reopenAndUpdateInvoice,
   saveItemPhotoFromFile
 } from '../services/billingService';
 import { ConfirmDialog, StatusBadge } from './StatusBadge';
@@ -37,6 +42,7 @@ import { ConfirmDialog, StatusBadge } from './StatusBadge';
 interface InvoiceDetailModalProps {
   invoiceId: string;
   settings: ShopSettings;
+  initialOpenSharePanel?: boolean;
   onClose: () => void;
   onUpdated: () => void;
   onNotify: (msg: string, isError?: boolean) => void;
@@ -45,6 +51,7 @@ interface InvoiceDetailModalProps {
 export function InvoiceDetailModal({
   invoiceId,
   settings,
+  initialOpenSharePanel = false,
   onClose,
   onUpdated,
   onNotify
@@ -92,6 +99,15 @@ export function InvoiceDetailModal({
     dataUrl: string;
   } | null>(null);
 
+  // Professional Bill Image + WhatsApp Sharing state
+  const [sharePanelOpen, setSharePanelOpen] = useState<boolean>(initialOpenSharePanel);
+  const [includePhotosInBillImage, setIncludePhotosInBillImage] = useState<boolean>(true);
+  const [generatedBillImage, setGeneratedBillImage] = useState<GeneratedBillImage | null>(null);
+  const [generatingImage, setGeneratingImage] = useState<boolean>(false);
+  const [shareMessageText, setShareMessageText] = useState<string>('');
+  const [shareOutcome, setShareOutcome] = useState<ShareBillOutcome | null>(null);
+  const [sharingInProgress, setSharingInProgress] = useState<boolean>(false);
+
   async function loadDetails() {
     setLoading(true);
     try {
@@ -104,6 +120,9 @@ export function InvoiceDetailModal({
         .filter((id): id is string => Boolean(id));
       const loadedPhotos = await getItemPhotosMap(photoIds);
       setPhotosMap(loadedPhotos);
+
+      setShareMessageText(buildShareBillText(data.invoice, settings));
+      setShareOutcome(null);
 
       if (data.invoice.balancePaise > 0) {
         setPayAmountRupees(paiseToRupeesString(data.invoice.balancePaise));
@@ -144,6 +163,44 @@ export function InvoiceDetailModal({
     loadDetails();
   }, [invoiceId]);
 
+  useEffect(() => {
+    if (initialOpenSharePanel) {
+      setSharePanelOpen(true);
+    }
+  }, [initialOpenSharePanel]);
+
+  // Regenerate the high-resolution bill image whenever share panel is open and invoice/payment/photo state changes
+  useEffect(() => {
+    let active = true;
+    if (!sharePanelOpen || !invoice) return;
+
+    setGeneratingImage(true);
+    generateInvoiceBillImage(invoice, payments, settings, {
+      photosMap,
+      includePhotos: includePhotosInBillImage,
+      format: 'image/png'
+    })
+      .then((img) => {
+        if (active) {
+          setGeneratedBillImage(img);
+        }
+      })
+      .catch((err: any) => {
+        if (active) {
+          onNotify(err?.message || 'Failed to generate bill image', true);
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setGeneratingImage(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [sharePanelOpen, invoice, payments, settings, photosMap, includePhotosInBillImage]);
+
   if (loading || !invoice) {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -152,6 +209,64 @@ export function InvoiceDetailModal({
         </div>
       </div>
     );
+  }
+
+  async function handleOpenOrToggleShareBill() {
+    if (!invoice) return;
+    const nextState = !sharePanelOpen;
+    setSharePanelOpen(nextState);
+    if (nextState) {
+      setShareOutcome(null);
+      if (!shareMessageText.trim()) {
+        setShareMessageText(buildShareBillText(invoice, settings));
+      }
+    }
+  }
+
+  async function handleExecuteShareBill() {
+    if (!invoice || sharingInProgress) return;
+    setSharingInProgress(true);
+    try {
+      const billImg =
+        generatedBillImage ||
+        (await generateInvoiceBillImage(invoice, payments, settings, {
+          photosMap,
+          includePhotos: includePhotosInBillImage,
+          format: 'image/png'
+        }));
+      setGeneratedBillImage(billImg);
+
+      const outcome = await shareBillImageAndText({
+        invoice,
+        settings,
+        billImage: billImg,
+        customText: shareMessageText
+      });
+      setShareOutcome(outcome);
+      onNotify(outcome.statusMessage);
+    } catch (err: any) {
+      onNotify(err?.message || 'Could not initiate bill share', true);
+    } finally {
+      setSharingInProgress(false);
+    }
+  }
+
+  async function handleDownloadBillImageOnly() {
+    if (!invoice) return;
+    try {
+      const billImg =
+        generatedBillImage ||
+        (await generateInvoiceBillImage(invoice, payments, settings, {
+          photosMap,
+          includePhotos: includePhotosInBillImage,
+          format: 'image/png'
+        }));
+      setGeneratedBillImage(billImg);
+      const filename = downloadBillImage(billImg);
+      onNotify(`Downloaded bill image ${filename}`);
+    } catch (err: any) {
+      onNotify(err?.message || 'Could not download bill image', true);
+    }
   }
 
   async function handleEditLinePhoto(idx: number, file: File | undefined) {
@@ -217,6 +332,7 @@ export function InvoiceDetailModal({
       });
       setInvoice(res.invoice);
       setPayments(res.allPayments);
+      setShareMessageText(buildShareBillText(res.invoice, settings));
       setPayNote('');
       setPayAmountRupees(
         res.invoice.balancePaise > 0 ? paiseToRupeesString(res.invoice.balancePaise) : ''
@@ -239,6 +355,7 @@ export function InvoiceDetailModal({
     try {
       const updated = await cancelInvoice(invoice.id, cancelReason.trim());
       setInvoice(updated);
+      setShareMessageText(buildShareBillText(updated, settings));
       setShowCancelPrompt(false);
       setCancelReason('');
       onUpdated();
@@ -277,6 +394,7 @@ export function InvoiceDetailModal({
         notes: editNotes
       });
       setInvoice(updated);
+      setShareMessageText(buildShareBillText(updated, settings));
       const photoIds = updated.items
         .map((it) => it.photoId)
         .filter((id): id is string => Boolean(id));
@@ -304,7 +422,12 @@ export function InvoiceDetailModal({
   }
 
   const whatsappUrl = buildWhatsAppShareUrl(invoice, settings);
+  const customWhatsappUrl = buildWhatsAppUrlWithCustomText(
+    invoice.customerPhone,
+    shareMessageText || buildShareBillText(invoice, settings)
+  );
   const smsUrl = buildSmsShareUrl(invoice, settings);
+  const attachedPhotoCount = Object.keys(photosMap).length;
 
   return (
     <div
@@ -363,15 +486,27 @@ export function InvoiceDetailModal({
           </div>
         )}
 
-        {/* PDF, Print & Messaging Action Bar */}
+        {/* Receipt Export & Client Dispatch Action Bar */}
         <div className="border-t border-b border-alif-border py-4 space-y-3">
           <div className="editorial-label">Receipt Export &amp; Client Dispatch</div>
           <div className="flex flex-wrap gap-2.5">
             <button
               type="button"
+              onClick={handleOpenOrToggleShareBill}
+              data-testid="btn-share-bill"
+              className={`px-4 py-2.5 text-sm font-semibold border transition ${
+                sharePanelOpen
+                  ? 'bg-alif-charcoal text-white border-black'
+                  : 'bg-alif-black text-white border-black hover:bg-zinc-800'
+              }`}
+            >
+              {sharePanelOpen ? 'Hide Share Bill' : 'Share Bill'}
+            </button>
+            <button
+              type="button"
               onClick={handleDownloadPdf}
               data-testid="btn-download-pdf"
-              className="px-4 py-2.5 bg-alif-black text-white text-sm font-semibold hover:bg-zinc-800"
+              className="px-4 py-2.5 bg-white text-alif-black border border-alif-border text-sm font-semibold hover:border-black"
             >
               Download PDF
             </button>
@@ -394,12 +529,14 @@ export function InvoiceDetailModal({
               target="_blank"
               rel="noopener noreferrer"
               data-testid="link-whatsapp-share"
-              className="px-4 py-2.5 bg-alif-charcoal text-white text-sm font-semibold hover:bg-black inline-flex items-center min-h-[44px]"
+              className="px-4 py-2.5 bg-white text-alif-black border border-alif-border text-sm font-semibold hover:border-black inline-flex items-center min-h-[44px]"
             >
               WhatsApp Summary
             </a>
             <a
               href={smsUrl}
+              target="_blank"
+              rel="noopener noreferrer"
               data-testid="link-sms-share"
               className="px-4 py-2.5 bg-white text-alif-black border border-alif-border text-sm font-semibold hover:border-black inline-flex items-center min-h-[44px]"
             >
@@ -407,9 +544,162 @@ export function InvoiceDetailModal({
             </a>
           </div>
           <p className="text-sm text-alif-grey">
-            WhatsApp and SMS actions prefill the client&apos;s number and invoice summary in your messaging app for manual review before sending.
+            Tap <strong className="text-alif-black">Share Bill</strong> to generate a branded{' '}
+            <span className="font-ubuntu font-medium text-alif-black">alif.</span> bill image and share it with an editable message on WhatsApp.
           </p>
         </div>
+
+        {/* Professional Bill Image + WhatsApp Sharing Studio */}
+        {sharePanelOpen && (
+          <section
+            data-testid="share-bill-panel"
+            className="border border-black bg-stone-50 p-4 sm:p-5 space-y-5"
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-alif-border pb-3">
+              <div>
+                <h3 className="editorial-subhead">
+                  Share Bill — Image &amp; WhatsApp Message
+                </h3>
+                <p className="text-sm text-alif-grey mt-0.5">
+                  High-resolution <span className="font-ubuntu font-medium text-alif-black">alif.</span> receipt image generated locally from saved invoice {invoice.invoiceNumber}.
+                </p>
+              </div>
+              {attachedPhotoCount > 0 && (
+                <label className="inline-flex items-center gap-2 text-sm font-medium text-alif-black cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={includePhotosInBillImage}
+                    onChange={(e) => setIncludePhotosInBillImage(e.target.checked)}
+                    data-testid="toggle-share-photos"
+                    className="w-4 h-4 accent-black"
+                  />
+                  <span>Include item photos ({attachedPhotoCount})</span>
+                </label>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 items-start">
+              {/* Left Column: Generated Bill Image Preview */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="editorial-label">Generated Bill Image Preview</span>
+                  {generatedBillImage && (
+                    <span
+                      data-testid="share-bill-dimensions"
+                      className="text-sm font-mono text-alif-grey"
+                    >
+                      {generatedBillImage.width}×{generatedBillImage.height}px
+                    </span>
+                  )}
+                </div>
+
+                <div className="bg-white border border-alif-border p-2 max-h-96 overflow-y-auto flex items-center justify-center">
+                  {generatingImage || !generatedBillImage ? (
+                    <div className="py-12 text-sm text-alif-grey">
+                      Rendering bill image...
+                    </div>
+                  ) : (
+                    <img
+                      src={generatedBillImage.dataUrl}
+                      alt={`Bill ${invoice.invoiceNumber} for ${invoice.customerName}`}
+                      data-testid="share-bill-preview-img"
+                      className="w-full h-auto block border border-alif-border"
+                    />
+                  )}
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleDownloadBillImageOnly}
+                    data-testid="btn-download-bill-image"
+                    className="px-4 py-2 text-sm font-semibold border border-alif-border bg-white text-alif-black hover:border-black"
+                  >
+                    Download Image ({invoice.invoiceNumber}.png)
+                  </button>
+                </div>
+              </div>
+
+              {/* Right Column: Editable WhatsApp Message & Share Actions */}
+              <div className="space-y-4">
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label
+                      htmlFor="share-whatsapp-message"
+                      className="editorial-label"
+                    >
+                      Editable WhatsApp Message
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setShareMessageText(buildShareBillText(invoice, settings))
+                      }
+                      data-testid="btn-reset-share-message"
+                      className="text-sm font-medium text-alif-grey hover:text-alif-black underline"
+                    >
+                      Reset Text
+                    </button>
+                  </div>
+                  <textarea
+                    id="share-whatsapp-message"
+                    rows={7}
+                    value={shareMessageText}
+                    onChange={(e) => setShareMessageText(e.target.value)}
+                    data-testid="textarea-share-message"
+                    className="w-full px-3.5 py-2.5 text-sm font-mono border border-alif-border bg-white text-alif-black leading-relaxed"
+                  />
+                  <p className="text-sm text-alif-grey mt-1">
+                    Includes customer name, invoice number, total, amount paid, and remaining balance. Edit freely before sharing.
+                  </p>
+                </div>
+
+                <div className="flex flex-col sm:flex-row flex-wrap gap-2.5">
+                  <button
+                    type="button"
+                    disabled={sharingInProgress || generatingImage}
+                    onClick={handleExecuteShareBill}
+                    data-testid="btn-execute-share-bill"
+                    className="flex-1 px-4 py-3 bg-alif-black text-white text-sm font-semibold hover:bg-zinc-800 disabled:opacity-50"
+                  >
+                    {sharingInProgress
+                      ? 'Preparing Share...'
+                      : 'Share Image + Text on WhatsApp'}
+                  </button>
+                  <a
+                    href={customWhatsappUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    data-testid="link-whatsapp-custom-text"
+                    className="px-4 py-3 bg-white text-alif-black border border-alif-border text-sm font-semibold hover:border-black inline-flex items-center justify-center min-h-[44px]"
+                  >
+                    Open WhatsApp Text Only
+                  </a>
+                </div>
+
+                {/* Clear Instructions Banner when Fallback or Share Sheet is Triggered */}
+                {shareOutcome && (
+                  <div
+                    data-testid="share-fallback-instructions"
+                    className="bg-white border border-black p-3.5 space-y-1.5 text-sm text-alif-black"
+                  >
+                    <div className="font-semibold">
+                      {shareOutcome.manualAttachRequired
+                        ? 'Manual Image Attachment Required in WhatsApp'
+                        : 'Complete Sending in Your Messaging App'}
+                    </div>
+                    <p className="text-alif-charcoal leading-relaxed">
+                      {shareOutcome.instructions}
+                    </p>
+                    <p className="text-alif-grey text-sm">
+                      Note: The bill is only sent after you review and tap Send inside WhatsApp.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* Receipt Body: Client & Itemised Garment Table */}
         <div className="border border-alif-border">

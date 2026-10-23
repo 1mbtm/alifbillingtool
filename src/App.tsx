@@ -54,6 +54,7 @@ export default function App() {
   });
 
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
+  const [openModalInShareMode, setOpenModalInShareMode] = useState<boolean>(false);
   const [preselectedCustomer, setPreselectedCustomer] = useState<Customer | null>(null);
   const [toast, setToast] = useState<{ message: string; isError: boolean } | null>(null);
   const [dbError, setDbError] = useState<string | null>(null);
@@ -193,7 +194,10 @@ export default function App() {
               <DashboardView
                 metrics={metrics}
                 onNavigate={(tab) => setActiveTab(tab)}
-                onSelectInvoice={(inv) => setSelectedInvoiceId(inv.id)}
+                onSelectInvoice={(inv) => {
+                  setOpenModalInShareMode(false);
+                  setSelectedInvoiceId(inv.id);
+                }}
               />
             )}
 
@@ -206,6 +210,7 @@ export default function App() {
             onNotify={showNotification}
             onBillCreated={async (created) => {
               await refreshAllData();
+              setOpenModalInShareMode(false);
               setSelectedInvoiceId(created.id);
             }}
           />
@@ -215,7 +220,10 @@ export default function App() {
           <InvoicesHistoryView
             invoices={invoices}
             settings={settings}
-            onSelectInvoice={(inv) => setSelectedInvoiceId(inv.id)}
+            onSelectInvoice={(inv, openShare = false) => {
+              setOpenModalInShareMode(openShare);
+              setSelectedInvoiceId(inv.id);
+            }}
             onNotify={showNotification}
           />
         )}
@@ -225,7 +233,10 @@ export default function App() {
             customers={customers}
             invoices={invoices}
             onRefresh={refreshAllData}
-            onSelectInvoice={(inv) => setSelectedInvoiceId(inv.id)}
+            onSelectInvoice={(inv) => {
+              setOpenModalInShareMode(false);
+              setSelectedInvoiceId(inv.id);
+            }}
             onStartBillForCustomer={(cust) => {
               setPreselectedCustomer(cust);
               setActiveTab('create-bill');
@@ -270,7 +281,11 @@ export default function App() {
         <InvoiceDetailModal
           invoiceId={selectedInvoiceId}
           settings={settings}
-          onClose={() => setSelectedInvoiceId(null)}
+          initialOpenSharePanel={openModalInShareMode}
+          onClose={() => {
+            setSelectedInvoiceId(null);
+            setOpenModalInShareMode(false);
+          }}
           onUpdated={refreshAllData}
           onNotify={showNotification}
         />
