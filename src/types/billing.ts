@@ -8,6 +8,78 @@ export type PaymentRecordType = 'advance' | 'payment' | 'refund' | 'correction';
 
 export type DiscountType = 'flat' | 'percent';
 
+export type StockStatus = 'In Stock' | 'Low Stock' | 'Out of Stock';
+
+export type InventoryMovementType =
+  | 'receive'
+  | 'sale'
+  | 'adjustment'
+  | 'edit_reconcile'
+  | 'cancel_restore';
+
+export interface StockAllocation {
+  bundleId: string;
+  bundleCode: string;
+  quantityDeducted: number;
+  purchaseCostPaise?: number;
+}
+
+export interface InventoryVariant {
+  id: string;
+  sku: string;
+  name: string;
+  category: string;      // e.g. 'Fabric', 'Lace & Borders', 'Trims & Latkan'
+  productType: string;   // e.g. 'Fandy Silk', 'Cotton Astar', 'Gota Patti Lace'
+  workDesign: string;    // e.g. 'All-over Work', 'Small Butti', 'Plain Lining'
+  color: string;         // e.g. 'Green', 'Maroon', 'Ivory'
+  unit: string;          // e.g. 'm', 'mtr', 'pc', 'pair'
+  purchaseCostPaise: number;
+  defaultSellingPricePaise: number;
+  lowStockThreshold: number;
+  totalQuantity: number;
+  photoId?: string;
+  photoDataUrl?: string;
+  notes?: string;
+  isActive: boolean;
+  isPinned?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface InventoryBundle {
+  id: string;
+  variantId: string;
+  bundleCode: string;
+  initialQuantity: number;
+  remainingQuantity: number;
+  unit: string;
+  purchaseCostPaise: number;
+  receivedDate: string; // YYYY-MM-DD (used for FIFO ordering)
+  supplier?: string;
+  photoId?: string;
+  photoDataUrl?: string;
+  notes?: string;
+  createdAt: string;    // ISO timestamp (secondary FIFO tie-breaker)
+  updatedAt: string;
+}
+
+export interface InventoryMovement {
+  id: string;
+  variantId: string;
+  bundleId?: string;
+  bundleCode?: string;
+  type: InventoryMovementType;
+  quantityDelta: number; // Positive for additions/restores, negative for deductions
+  balanceAfter: number;
+  unit: string;
+  reason: string;
+  invoiceId?: string;
+  invoiceNumber?: string;
+  lineItemId?: string;
+  date: string;         // YYYY-MM-DD
+  createdAt: string;    // ISO timestamp
+}
+
 export interface ShopSettings {
   id: string;
   shopName: string;
@@ -51,6 +123,13 @@ export interface CatalogueItem {
   unit: string;
   description?: string;
   isActive: boolean;
+  inventoryVariantId?: string | null;
+  productType?: string;
+  workDesign?: string;
+  color?: string;
+  isPinned?: boolean;
+  photoId?: string;
+  photoDataUrl?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -71,6 +150,9 @@ export interface ItemPhotoRecord {
 export interface InvoiceLineItem {
   id: string;
   catalogueItemId: string | null;
+  inventoryVariantId?: string | null;
+  isNonStock?: boolean;
+  stockAllocations?: StockAllocation[];
   name: string;
   category: CatalogueCategory;
   quantity: number;
@@ -121,6 +203,7 @@ export interface Invoice {
   notes: string;
   cancelReason?: string;
   cancelledAt?: string;
+  stockRestoredOnCancel?: boolean;
   idempotencyKey?: string;
   createdAt: string;
   updatedAt: string;
@@ -135,6 +218,9 @@ export interface BackupPayload {
   catalogue: CatalogueItem[];
   invoices: Invoice[];
   payments: PaymentRecord[];
+  inventoryVariants?: InventoryVariant[];
+  inventoryBundles?: InventoryBundle[];
+  inventoryMovements?: InventoryMovement[];
 }
 
 export interface DashboardMetrics {
@@ -145,6 +231,8 @@ export interface DashboardMetrics {
   totalOutstandingPaise: number;
   outstandingInvoiceCount: number;
   recentInvoices: Invoice[];
+  lowStockCount?: number;
+  outOfStockCount?: number;
 }
 
 export interface PeriodReport {
@@ -172,4 +260,9 @@ export interface PeriodReport {
     quantity: number;
     revenuePaise: number;
   }[];
+}
+
+export interface ShareContentOptions {
+  includeImage: boolean;
+  includeText: boolean;
 }

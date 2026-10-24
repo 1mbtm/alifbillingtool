@@ -917,3 +917,781 @@ describe('6. Professional Bill Image Generation & WhatsApp Image+Text Sharing', 
     (globalThis as any).Image = origImage;
   });
 });
+
+
+describe('7. IndexedDB ObjectStore NotFoundError Resilience & Concurrent Seeding', () => {
+  const testDbName = 'test_alif_db_resilience';
+
+  beforeEach(async () => {
+    await Dexie.delete(testDbName);
+  });
+
+  it('serializes concurrent ensureSeeded() calls and never throws NotFoundError when itemPhotos store is unavailable', async () => {
+    const db = new ALIFBillingDatabase(testDbName);
+
+    // Fire 6 concurrent ensureSeeded() calls (simulating App.tsx + CreateBillView startup)
+    await Promise.all([
+      db.ensureSeeded(),
+      db.ensureSeeded(),
+      db.ensureSeeded(),
+      getShopSettings(db),
+      listCatalogue({}, db),
+      listInvoices({}, db)
+    ]);
+
+    expect(db.hasObjectStore('invoices')).toBe(true);
+    expect(db.hasObjectStore('itemPhotos')).toBe(true);
+
+    // Simulate a legacy/broken IDB connection where itemPhotos objectStore is reported missing
+    const origHasObjectStore = db.hasObjectStore.bind(db);
+    db.hasObjectStore = (storeName: string) => {
+      if (storeName === 'itemPhotos') return false;
+      return origHasObjectStore(storeName);
+    };
+
+    const samplePngBytes = new Uint8Array([
+      137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82,
+      0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0, 144, 119, 83, 222
+    ]);
+    const photoRec = await saveItemPhotoFromFile(
+      {
+        file: new Blob([samplePngBytes], { type: 'image/png' }),
+        lineItemId: 'line-legacy-1'
+      },
+      db
+    );
+    expect(photoRec.id).toMatch(/^photo-/);
+
+    // Creating an invoice must succeed without throwing NotFoundError on IDBTransaction
+    const created = await createInvoice(
+      {
+        customerName: ' Salma Khatoon ',
+        customerPhone: '9876543219',
+        invoiceDate: '2026-10-23',
+        items: [
+          {
+            id: 'line-legacy-1',
+            catalogueItemId: 'srv-astar-blouse',
+            name: 'Astar Blouse',
+            category: 'service',
+            quantity: 1,
+            unit: 'pc',
+            unitPricePaise: 45000,
+            photoId: photoRec.id
+          }
+        ],
+        advancePaise: 15000,
+        advanceMethod: 'cash'
+      },
+      db
+    );
+
+    expect(created.invoice.invoiceNumber).toBe('ALIF-2026-0001');
+    expect(created.invoice.totalPaise).toBe(45000);
+    expect(created.invoice.balancePaise).toBe(30000);
+
+    // Reopening/updating invoice and reading photos must also succeed without NotFoundError
+    const reopened = await reopenAndUpdateInvoice(
+      {
+        invoiceId: created.invoice.id,
+        discountType: 'flat',
+        discountValue: 5000
+      },
+      db
+    );
+    expect(reopened.totalPaise).toBe(40000);
+    expect(reopened.balancePaise).toBe(25000);
+
+    const photosMap = await getItemPhotosMap([photoRec.id], db);
+    expect(photosMap[photoRec.id]).toBeDefined();
+
+    await deleteItemPhoto(photoRec.id, db);
+    db.close();
+  });
+});
+
+describe('8. Inventory Management, Fractional Quantities, FIFO Bundle Deductions, Edit Reconciliation & Cancellation', () => {
+  const testDbName = 'test_alif_inventory_fifo';
+  let db: ALIFBillingDatabase;
+
+  beforeEach(async () => {
+    await Dexie.delete(testDbName);
+    db = new ALIFBillingDatabase(testDbName);
+    await db.ensureSeeded();
+  });
+
+  it('tracks fractional quantities (1.2 m, 2.5 m, 3.25 m) without floating-point drift, keeps colours as separate variants, and separates purchase cost, default price, and selling price', async () => {
+    const {
+      saveInventoryVariant,
+      receiveInventoryBundle,
+      adjustInventoryStock,
+      listInventoryBundles
+    } = await import('../services/billingService');
+    const { getVariantStockStatus } = await import('../utils/search');
+
+    // Create a new variant with opening bundle of 1.2 m
+    const created = await saveInventoryVariant(
+      {
+        category: 'Fabric',
+        productType: 'Fandy Silk',
+        workDesign: 'All-over Work',
+        color: 'Royal Blue',
+        unit: 'm',
+        purchaseCostPaise: 30000, // ₹300/m cost
+        defaultSellingPricePaise: 46000, // ₹460/m catalogue ref price
+        lowStockThreshold: 4,
+        initialBundleQuantity: 1.2,
+        initialBundleDate: '2026-10-01',
+        initialBundleCode: 'BND-RBL-01'
+      },
+      db
+    );
+
+    expect(created.variant.totalQuantity).toBe(1.2);
+    expect(getVariantStockStatus(created.variant)).toBe('Low Stock');
+
+    // Receive two more fractional bundles: 2.5 m and 3.25 m -> total should be 1.2 + 2.5 + 3.25 = 6.95 m
+    await receiveInventoryBundle(
+      {
+        variantId: created.variant.id,
+        quantity: 2.5,
+        receivedDate: '2026-10-05',
+        purchaseCostPaise: 31000,
+        bundleCode: 'BND-RBL-02'
+      },
+      db
+    );
+    const afterThird = await receiveInventoryBundle(
+      {
+        variantId: created.variant.id,
+        quantity: 3.25,
+        receivedDate: '2026-10-10',
+        purchaseCostPaise: 31500,
+        bundleCode: 'BND-RBL-03'
+      },
+      db
+    );
+
+    expect(afterThird.variant.totalQuantity).toBe(6.95);
+    expect(getVariantStockStatus(afterThird.variant)).toBe('In Stock');
+
+    const bundles = await listInventoryBundles(created.variant.id, db);
+    expect(bundles).toHaveLength(3);
+    expect(bundles.map((b) => b.bundleCode)).toEqual([
+      'BND-RBL-01',
+      'BND-RBL-02',
+      'BND-RBL-03'
+    ]);
+
+    // Manual stock adjustment requires a reason
+    await expect(
+      adjustInventoryStock(
+        {
+          variantId: created.variant.id,
+          quantityDelta: -0.45,
+          reason: '   '
+        },
+        db
+      )
+    ).rejects.toThrow(/reason is required/i);
+
+    const adjusted = await adjustInventoryStock(
+      {
+        variantId: created.variant.id,
+        bundleId: bundles[0].id,
+        quantityDelta: -0.45,
+        reason: 'Sample swatch cut for display'
+      },
+      db
+    );
+    // 6.95 - 0.45 = 6.5 m
+    expect(adjusted.variant.totalQuantity).toBe(6.5);
+  });
+
+  it('deducts stock in strict FIFO order on bill save, ignores services/non-stock items, reconciles edits, and restores stock exactly once on cancellation', async () => {
+    const {
+      listInventoryBundles,
+      listInventoryMovements,
+      listInventoryVariants
+    } = await import('../services/billingService');
+
+    // Seed variant 'var-fandy-silk-allover-green' has two bundles:
+    // BND-FSG-01 (received 2026-10-01): 4.5 m
+    // BND-FSG-02 (received 2026-10-12): 8.0 m
+    // Combined = 12.5 m
+    let bundlesBefore = await listInventoryBundles('var-fandy-silk-allover-green', db);
+    expect(bundlesBefore).toHaveLength(2);
+    expect(bundlesBefore[0].remainingQuantity).toBe(4.5);
+    expect(bundlesBefore[1].remainingQuantity).toBe(8.0);
+
+    // 1. Insufficient stock (> 12.5 m) must be rejected atomically without creating an invoice or deducting stock
+    await expect(
+      createInvoice(
+        {
+          customerName: 'Zoya Khan',
+          customerPhone: '9876543210',
+          items: [
+            {
+              catalogueItemId: 'prd-fandy-silk-green',
+              inventoryVariantId: 'var-fandy-silk-allover-green',
+              name: 'Green Fandy Silk — All-over Work',
+              category: 'product',
+              quantity: 14.0,
+              unit: 'm',
+              unitPricePaise: 52000
+            }
+          ]
+        },
+        db
+      )
+    ).rejects.toThrow(/Insufficient stock/i);
+
+    bundlesBefore = await listInventoryBundles('var-fandy-silk-allover-green', db);
+    expect(bundlesBefore[0].remainingQuantity).toBe(4.5);
+    expect(bundlesBefore[1].remainingQuantity).toBe(8.0);
+
+    // 2. Save valid bill with:
+    // - 5.75 m of Green Fandy Silk (selling at custom ₹550/m -> independent of ₹320 cost and ₹480 default)
+    // - 1 pc of Astar Blouse (service -> must NOT deduct stock)
+    // - 2 m of Custom Customer Fabric with isNonStock: true (must NOT deduct stock)
+    const saved = await createInvoice(
+      {
+        customerName: 'Zoya Khan',
+        customerPhone: '9876543210',
+        invoiceDate: '2026-10-24',
+        items: [
+          {
+            id: 'line-fandy-green',
+            catalogueItemId: 'prd-fandy-silk-green',
+            inventoryVariantId: 'var-fandy-silk-allover-green',
+            name: 'Green Fandy Silk — All-over Work',
+            category: 'product',
+            quantity: 5.75,
+            unit: 'm',
+            unitPricePaise: 55000 // ₹550/m actual invoice selling price
+          },
+          {
+            id: 'line-blouse-srv',
+            catalogueItemId: 'srv-astar-blouse',
+            name: 'Astar Blouse',
+            category: 'service',
+            quantity: 1,
+            unit: 'pc',
+            unitPricePaise: 45000
+          },
+          {
+            id: 'line-cust-nonstock',
+            catalogueItemId: null,
+            inventoryVariantId: 'var-fandy-silk-allover-green',
+            isNonStock: true,
+            name: 'Customer Own Border Trim',
+            category: 'custom',
+            quantity: 2,
+            unit: 'm',
+            unitPricePaise: 10000
+          }
+        ],
+        advancePaise: 100000
+      },
+      db
+    );
+
+    // Verify FIFO allocation: 4.5 m from BND-FSG-01 (leaving 0) and 1.25 m from BND-FSG-02 (leaving 6.75 m)
+    const greenLine = saved.invoice.items[0];
+    expect(greenLine.stockAllocations).toEqual([
+      {
+        bundleId: 'bnd-fandy-green-01',
+        bundleCode: 'BND-FSG-01',
+        quantityDeducted: 4.5,
+        purchaseCostPaise: 31000
+      },
+      {
+        bundleId: 'bnd-fandy-green-02',
+        bundleCode: 'BND-FSG-02',
+        quantityDeducted: 1.25,
+        purchaseCostPaise: 32500
+      }
+    ]);
+    expect(saved.invoice.items[1].stockAllocations).toBeUndefined();
+    expect(saved.invoice.items[2].stockAllocations).toBeUndefined();
+
+    const bundlesAfterSale = await listInventoryBundles('var-fandy-silk-allover-green', db);
+    expect(bundlesAfterSale[0].remainingQuantity).toBe(0);
+    expect(bundlesAfterSale[1].remainingQuantity).toBe(6.75);
+
+    const variantsAfterSale = await listInventoryVariants({}, db);
+    const greenVarAfterSale = variantsAfterSale.find(
+      (v) => v.id === 'var-fandy-silk-allover-green'
+    )!;
+    expect(greenVarAfterSale.totalQuantity).toBe(6.75);
+    expect(greenVarAfterSale.purchaseCostPaise).toBe(32000);
+    expect(greenVarAfterSale.defaultSellingPricePaise).toBe(48000);
+
+    // 3. Recording a subsequent balance payment must NEVER deduct stock
+    await recordInvoicePayment(
+      {
+        invoiceId: saved.invoice.id,
+        amountPaise: 50000,
+        method: 'upi',
+        type: 'payment'
+      },
+      db
+    );
+    const bundlesAfterPayment = await listInventoryBundles('var-fandy-silk-allover-green', db);
+    expect(bundlesAfterPayment[1].remainingQuantity).toBe(6.75);
+
+    // 4. Editing the bill (reducing 5.75 m -> 3.25 m) must reconcile stock accurately (12.5 - 3.25 = 9.25 m remaining)
+    const edited = await reopenAndUpdateInvoice(
+      {
+        invoiceId: saved.invoice.id,
+        items: [
+          {
+            id: 'line-fandy-green',
+            catalogueItemId: 'prd-fandy-silk-green',
+            inventoryVariantId: 'var-fandy-silk-allover-green',
+            name: 'Green Fandy Silk — All-over Work',
+            category: 'product',
+            quantity: 3.25,
+            unit: 'm',
+            unitPricePaise: 55000
+          },
+          {
+            id: 'line-blouse-srv',
+            catalogueItemId: 'srv-astar-blouse',
+            name: 'Astar Blouse',
+            category: 'service',
+            quantity: 1,
+            unit: 'pc',
+            unitPricePaise: 45000
+          }
+        ]
+      },
+      db
+    );
+
+    expect(edited.items[0].stockAllocations).toEqual([
+      {
+        bundleId: 'bnd-fandy-green-01',
+        bundleCode: 'BND-FSG-01',
+        quantityDeducted: 3.25,
+        purchaseCostPaise: 31000
+      }
+    ]);
+    const bundlesAfterEdit = await listInventoryBundles('var-fandy-silk-allover-green', db);
+    expect(bundlesAfterEdit[0].remainingQuantity).toBe(1.25);
+    expect(bundlesAfterEdit[1].remainingQuantity).toBe(8.0);
+
+    // 5. Cancelling the bill restores the 3.25 m back to BND-FSG-01 (total = 12.5 m)
+    const cancelledOnce = await cancelInvoice(saved.invoice.id, 'Client changed fabric choice', db);
+    expect(cancelledOnce.status).toBe('Cancelled');
+    expect(cancelledOnce.stockRestoredOnCancel).toBe(true);
+
+    const bundlesAfterCancel1 = await listInventoryBundles('var-fandy-silk-allover-green', db);
+    expect(bundlesAfterCancel1[0].remainingQuantity).toBe(4.5);
+    expect(bundlesAfterCancel1[1].remainingQuantity).toBe(8.0);
+
+    // Calling cancelInvoice a second time must NOT double-restore stock
+    await cancelInvoice(saved.invoice.id, 'Duplicate cancel click', db);
+    const bundlesAfterCancel2 = await listInventoryBundles('var-fandy-silk-allover-green', db);
+    expect(bundlesAfterCancel2[0].remainingQuantity).toBe(4.5);
+    expect(bundlesAfterCancel2[1].remainingQuantity).toBe(8.0);
+
+    const movements = await listInventoryMovements('var-fandy-silk-allover-green', db);
+    expect(movements.length).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe('9. Intelligent Offline Search, Product Hierarchy & Frequently Used Ranking', () => {
+  const testDbName = 'test_alif_search_and_freq';
+  let db: ALIFBillingDatabase;
+
+  beforeEach(async () => {
+    await Dexie.delete(testDbName);
+    db = new ALIFBillingDatabase(testDbName);
+    await db.ensureSeeded();
+  });
+
+  it('ranks "Green Fandy Silk — All-over Work" #1 when searching typo query "gandy grren work all over" and handles word order and hyphens', async () => {
+    const { listInventoryVariants, getFrequentlyUsedItems } = await import(
+      '../services/billingService'
+    );
+    const {
+      extractInventoryHierarchy,
+      searchInventoryVariants
+    } = await import('../utils/search');
+
+    const variants = await listInventoryVariants({}, db);
+
+    // 1. Typo + word order + hyphen variation: "gandy grren work all over"
+    const typoRanked = searchInventoryVariants(variants, 'gandy grren work all over');
+    expect(typoRanked.length).toBeGreaterThan(0);
+    expect(typoRanked[0].item.id).toBe('var-fandy-silk-allover-green');
+    expect(typoRanked[0].item.name).toBe('Green Fandy Silk — All-over Work');
+    expect(typoRanked[0].isApproximateMatch).toBe(true);
+
+    // 2. Word order & hyphen variations: "allover silk green fandy"
+    const orderRanked = searchInventoryVariants(variants, 'allover silk green fandy');
+    expect(orderRanked[0].item.id).toBe('var-fandy-silk-allover-green');
+
+    // 3. Hierarchy extraction: Fabric -> Fandy Silk -> All-over Work -> [Green, Maroon]
+    const hier = extractInventoryHierarchy(
+      variants,
+      'Fabric',
+      'Fandy Silk',
+      'All-over Work'
+    );
+    expect(hier.categories).toContain('Fabric');
+    expect(hier.productTypes).toContain('Fandy Silk');
+    expect(hier.workDesigns).toContain('All-over Work');
+    expect(hier.colors).toEqual(['Green', 'Maroon']);
+
+    // 4. Frequently Used items: when no invoices exist yet, invoiceUsageCount is strictly 0 (never fabricated)
+    const initialFreq = await getFrequentlyUsedItems(8, db);
+    expect(initialFreq.length).toBeGreaterThan(0);
+    for (const entry of initialFreq) {
+      expect(entry.invoiceUsageCount).toBe(0);
+      expect(entry.isPinned).toBe(true);
+    }
+
+    // Save two invoices referencing 'srv-lehenga' (which is not pinned by default)
+    await createInvoice(
+      {
+        customerName: 'Client One',
+        customerPhone: '9800000001',
+        items: [
+          {
+            catalogueItemId: 'srv-lehenga',
+            name: 'Lehenga',
+            category: 'service',
+            quantity: 1,
+            unit: 'set',
+            unitPricePaise: 220000
+          }
+        ]
+      },
+      db
+    );
+    await createInvoice(
+      {
+        customerName: 'Client Two',
+        customerPhone: '9800000002',
+        items: [
+          {
+            catalogueItemId: 'srv-lehenga',
+            name: 'Lehenga',
+            category: 'service',
+            quantity: 2,
+            unit: 'set',
+            unitPricePaise: 220000
+          }
+        ]
+      },
+      db
+    );
+
+    const updatedFreq = await getFrequentlyUsedItems(8, db);
+    expect(updatedFreq[0].item.id).toBe('srv-lehenga');
+    expect(updatedFreq[0].invoiceUsageCount).toBe(2);
+    expect(updatedFreq[0].totalQuantityBilled).toBe(3);
+  });
+});
+
+describe('10. Simplified 3-Action Bill Sharing, Checkboxes & SMS Image Limitation Handling', () => {
+  const testDbName = 'test_alif_simplified_sharing';
+  let db: ALIFBillingDatabase;
+
+  beforeEach(async () => {
+    await Dexie.delete(testDbName);
+    db = new ALIFBillingDatabase(testDbName);
+    await db.ensureSeeded();
+  });
+
+  it('enforces Bill Image / Bill Summary Text checkbox combinations and never silently drops Bill Image when SMS is selected', async () => {
+    const {
+      shareBillViaWhatsApp,
+      shareBillViaSms,
+      validateShareContentSelection
+    } = await import('../utils/pdf');
+    const settings = await getShopSettings(db);
+
+    const created = await createInvoice(
+      {
+        customerName: 'Farah Naaz',
+        customerPhone: '9765432109',
+        invoiceDate: '2026-10-24',
+        items: [
+          {
+            catalogueItemId: 'srv-suit',
+            name: 'Suit Stitching',
+            category: 'service',
+            quantity: 1,
+            unit: 'set',
+            unitPricePaise: 65000
+          }
+        ],
+        advancePaise: 25000
+      },
+      db
+    );
+
+    // 1. Both unchecked -> validation error
+    expect(
+      validateShareContentSelection({ includeImage: false, includeText: false })
+    ).toContain('Please select at least one option');
+
+    await expect(
+      shareBillViaWhatsApp({
+        invoice: created.invoice,
+        payments: created.payments,
+        settings,
+        includeImage: false,
+        includeText: false,
+        openWindow: false
+      })
+    ).rejects.toThrow(/select at least one option/i);
+
+    // 2. WhatsApp with Text Only (includeImage: false, includeText: true)
+    const waTextOnly = await shareBillViaWhatsApp({
+      invoice: created.invoice,
+      payments: created.payments,
+      settings,
+      includeImage: false,
+      includeText: true,
+      openWindow: false
+    });
+    expect(waTextOnly.method).toBe('whatsapp-text-only');
+    expect(waTextOnly.sentAutomatically).toBe(false);
+    expect(waTextOnly.targetUrl).toContain('https://wa.me/919765432109?text=');
+
+    // 3. SMS with Bill Image checked -> must NOT silently omit the image; returns sms-image-limitation-prompt
+    const smsWithImagePrompt = await shareBillViaSms({
+      invoice: created.invoice,
+      payments: created.payments,
+      settings,
+      includeImage: true,
+      includeText: true,
+      resolution: 'prompt',
+      openWindow: false
+    });
+    expect(smsWithImagePrompt.smsImageLimitation).toBe(true);
+    expect(smsWithImagePrompt.method).toBe('sms-image-limitation-prompt');
+    expect(smsWithImagePrompt.sentAutomatically).toBe(false);
+    expect(smsWithImagePrompt.instructions).toContain('Standard SMS cannot attach bill images');
+
+    // 4. SMS with Text Only -> opens native sms: composer and never claims automatic sending
+    const smsTextOnly = await shareBillViaSms({
+      invoice: created.invoice,
+      payments: created.payments,
+      settings,
+      includeImage: false,
+      includeText: true,
+      openWindow: false
+    });
+    expect(smsTextOnly.method).toBe('sms-text-composer');
+    expect(smsTextOnly.sentAutomatically).toBe(false);
+    expect(smsTextOnly.targetUrl).toContain('sms:+919765432109?body=');
+    expect(smsTextOnly.statusMessage.toLowerCase()).toContain('composer');
+  });
+});
+
+describe('11. High-Priority Shop-Counter Usability: Category-Aware Focus, Conditional Scroll, Phone-First Customer Lookup & Rate Shortcuts', () => {
+  const testDbName = 'test_alif_shop_usability';
+  let db: ALIFBillingDatabase;
+
+  beforeEach(async () => {
+    await Dexie.delete(testDbName);
+    db = new ALIFBillingDatabase(testDbName);
+    await db.ensureSeeded();
+  });
+
+  it('resolves category-aware focus targets, prevents page scroll when allowScroll is false, and progresses through blank fields in order', async () => {
+    const {
+      findNextBlankBillingField,
+      focusAndScrollElementByTestId,
+      resolveCategoryFocusTarget,
+      normalizeCustomerPhoneDigits
+    } = await import('../utils/search');
+
+    // Verify blank-field progression across multiple items (including wrap-around and skipping optional fields)
+    const sampleLines = [
+      { id: 'l1', name: 'Green Fandy Silk', category: 'product', quantity: '1', unitPriceRupees: '' },
+      { id: 'l2', name: 'Astar Blouse', category: 'service', quantity: '1', unitPriceRupees: '450' }
+    ];
+    // Starting from item #2 (idx 1) when item #1 (idx 0) still has a blank price -> wraps around to line-price-0
+    expect(
+      findNextBlankBillingField({
+        lines: sampleLines,
+        customerPhone: '',
+        customerName: '',
+        startAfterLineIdx: 1
+      })
+    ).toEqual({
+      section: 'items',
+      testId: 'line-price-0',
+      lineIdx: 0,
+      lineId: 'l1',
+      field: 'price',
+      selectText: false
+    });
+
+    // Once all items have prices -> advances to input-customer-phone
+    const completedLines = [
+      { id: 'l1', name: 'Green Fandy Silk', category: 'product', quantity: '2.5', unitPriceRupees: '500' },
+      { id: 'l2', name: 'Astar Blouse', category: 'service', quantity: '1', unitPriceRupees: '450' }
+    ];
+    expect(
+      findNextBlankBillingField({
+        lines: completedLines,
+        customerPhone: '',
+        customerName: '',
+        startAfterLineIdx: 1
+      })
+    ).toEqual({
+      section: 'customer',
+      testId: 'input-customer-phone',
+      selectText: false
+    });
+
+    // When phone is filled -> advances to input-customer-name
+    expect(
+      findNextBlankBillingField({
+        lines: completedLines,
+        customerPhone: '9876543210',
+        customerName: '',
+        startAfterLineIdx: 1
+      })
+    ).toEqual({
+      section: 'customer',
+      testId: 'input-customer-name',
+      selectText: false
+    });
+
+    // When both phone and name are filled -> advances to input-advance-amount
+    expect(
+      findNextBlankBillingField({
+        lines: completedLines,
+        customerPhone: '9876543210',
+        customerName: 'Ayesha Siddiqui',
+        startAfterLineIdx: 1
+      })
+    ).toEqual({
+      section: 'save',
+      testId: 'input-advance-amount',
+      selectText: true
+    });
+  });
+
+  it('resolves category-aware focus targets, normalizes Indian phone digits, and scrolls only when target element is outside the visible viewport and allowScroll is not false', async () => {
+    const {
+      focusAndScrollElementByTestId,
+      resolveCategoryFocusTarget,
+      normalizeCustomerPhoneDigits
+    } = await import('../utils/search');
+
+    expect(resolveCategoryFocusTarget('service', false)).toEqual({
+      target: 'price',
+      selectText: false
+    });
+    expect(resolveCategoryFocusTarget('product', true)).toEqual({
+      target: 'qty',
+      selectText: true
+    });
+    expect(normalizeCustomerPhoneDigits('+91 98765-43210')).toBe('9876543210');
+    expect(normalizeCustomerPhoneDigits('09876543210')).toBe('9876543210');
+
+    const origDocument = (globalThis as any).document;
+    const origWindow = (globalThis as any).window;
+
+    let focusedPreventScroll = false;
+    let selectedCalled = false;
+    let scrollIntoViewCalls = 0;
+    let mockRect = { top: 240, bottom: 284 }; // Inside [104, 648] safe viewport
+
+    const mockInput: any = {
+      focus: (opts?: { preventScroll?: boolean }) => {
+        if (opts?.preventScroll) focusedPreventScroll = true;
+      },
+      select: () => {
+        selectedCalled = true;
+      },
+      getBoundingClientRect: () => mockRect,
+      scrollIntoView: () => {
+        scrollIntoViewCalls += 1;
+      }
+    };
+
+    (globalThis as any).window = {
+      innerHeight: 740,
+      visualViewport: { height: 740 }
+    };
+    (globalThis as any).document = {
+      documentElement: { clientHeight: 740 },
+      querySelector: (sel: string) =>
+        sel === '[data-testid="line-qty-0"]' ? mockInput : null
+    };
+
+    // 1. Element already inside visible viewport -> focuses & selects text without scrolling
+    const found1 = focusAndScrollElementByTestId('line-qty-0', { selectText: true });
+    expect(found1).toBe(true);
+    expect(focusedPreventScroll).toBe(true);
+    expect(selectedCalled).toBe(true);
+    expect(scrollIntoViewCalls).toBe(0);
+
+    // 2. Element below viewport when allowScroll is false (product selection) -> NEVER scrolls!
+    mockRect = { top: 680, bottom: 725 };
+    focusAndScrollElementByTestId('line-qty-0', { selectText: true, allowScroll: false });
+    expect(scrollIntoViewCalls).toBe(0);
+
+    // 3. Element below mobile keyboard / sticky bar when allowScroll is true -> scrolls smoothly into view
+    focusAndScrollElementByTestId('line-qty-0', { selectText: false, allowScroll: true });
+    expect(scrollIntoViewCalls).toBe(1);
+
+    (globalThis as any).document = origDocument;
+    (globalThis as any).window = origWindow;
+  });
+
+  it('tracks repeat customer unpaid balance and historical item selling prices for phone-first lookup and 1-tap rate shortcuts', async () => {
+    // Create first bill for repeat customer Ayesha Siddiqui (9876543210) with Green Fandy Silk at ₹540/m and Astar Blouse at ₹480
+    const firstBill = await createInvoice(
+      {
+        customerName: 'Ayesha Siddiqui',
+        customerPhone: '9876543210',
+        customerNotes: 'Prefers deep back hook',
+        invoiceDate: '2026-10-20',
+        items: [
+          {
+            catalogueItemId: 'prd-fandy-silk-green',
+            inventoryVariantId: 'var-fandy-silk-allover-green',
+            name: 'Green Fandy Silk — All-over Work',
+            category: 'product',
+            quantity: 2.25,
+            unit: 'm',
+            unitPricePaise: 54000 // ₹540/m
+          },
+          {
+            catalogueItemId: 'srv-astar-blouse',
+            name: 'Astar Blouse',
+            category: 'service',
+            quantity: 1,
+            unit: 'pc',
+            unitPricePaise: 48000 // ₹480
+          }
+        ],
+        advancePaise: 50000 // ₹500 advance on ₹1,695 total -> ₹1,195 unpaid balance
+      },
+      db
+    );
+
+    expect(firstBill.invoice.totalPaise).toBe(169500);
+    expect(firstBill.invoice.balancePaise).toBe(119500);
+
+    const customers = await listCustomers('9876543210', db);
+    expect(customers).toHaveLength(1);
+    expect(customers[0].name).toBe('Ayesha Siddiqui');
+    expect(customers[0].notes).toBe('Prefers deep back hook');
+
+    const history = await getCustomerHistory(customers[0].id, db);
+    expect(history.totalBilledPaise).toBe(169500);
+    expect(history.totalOutstandingPaise).toBe(119500);
+  });
+});

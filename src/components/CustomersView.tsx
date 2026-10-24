@@ -23,6 +23,7 @@ export function CustomersView({
 }: CustomersViewProps) {
   const [search, setSearch] = useState('');
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+  const [isFormOpen, setIsFormOpen] = useState<boolean>(false);
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [notes, setNotes] = useState('');
@@ -69,6 +70,7 @@ export function CustomersView({
     setName(c.name);
     setPhone(c.phone);
     setNotes(c.notes || '');
+    setIsFormOpen(true);
   }
 
   function resetForm() {
@@ -88,6 +90,7 @@ export function CustomersView({
         notes
       });
       resetForm();
+      setIsFormOpen(false);
       onRefresh();
       onNotify(`Saved customer ${saved.name}`);
     } catch (err: any) {
@@ -103,99 +106,120 @@ export function CustomersView({
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   }, [invoices, selectedHistoryCustomerId]);
 
+  const showForm = isFormOpen || Boolean(editingCustomer);
+
   return (
-    <div className="space-y-8">
-      {/* Add / Edit Client Form */}
-      <form
-        onSubmit={handleSaveCustomer}
-        className="border-b border-black pb-6 space-y-4"
-      >
-        <div className="flex items-baseline justify-between">
+    <div className="space-y-6">
+      {/* Header & Collapsible Register/Edit Client Panel */}
+      <section className="bg-white border border-alif-border p-4 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <div className="editorial-label">Client Book</div>
-            <h2 className="font-serif text-xl uppercase tracking-[0.18em] text-alif-black font-normal mt-0.5">
-              {editingCustomer ? `Edit Client: ${editingCustomer.name}` : 'Register Client'}
+            <h2 className="editorial-heading mt-0.5">
+              {editingCustomer ? `Edit Client: ${editingCustomer.name}` : `Client Directory (${customers.length})`}
             </h2>
           </div>
-          {editingCustomer && (
+
+          <div className="flex items-center gap-2">
+            {editingCustomer && (
+              <button
+                type="button"
+                onClick={() => {
+                  resetForm();
+                  setIsFormOpen(false);
+                }}
+                className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider border border-alif-border bg-white hover:border-black min-h-[40px]"
+              >
+                Cancel Edit
+              </button>
+            )}
             <button
               type="button"
-              onClick={resetForm}
-              className="text-[10px] font-semibold uppercase tracking-widest text-alif-grey underline"
+              onClick={() => setIsFormOpen((prev) => !prev)}
+              aria-expanded={showForm}
+              className="px-3.5 py-2 text-xs font-semibold uppercase tracking-wider bg-alif-black text-white hover:bg-zinc-800 min-h-[40px]"
             >
-              Cancel Edit
+              {showForm ? 'Hide Form ▲' : '+ Register Client'}
             </button>
-          )}
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <div>
-            <label className="block editorial-label mb-1">Full Name *</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              data-testid="cust-form-name"
-              className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
-            />
-          </div>
-
-          <div>
-            <label className="block editorial-label mb-1">Phone Number *</label>
-            <input
-              type="tel"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              data-testid="cust-form-phone"
-              className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
-            />
-          </div>
-
-          <div>
-            <label className="block editorial-label mb-1">Notes (Optional)</label>
-            <input
-              type="text"
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              data-testid="cust-form-notes"
-              className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
-            />
           </div>
         </div>
 
-        <div className="flex justify-end">
-          <button
-            type="submit"
-            data-testid="btn-save-customer"
-            className="px-5 py-2.5 bg-alif-black text-white text-[10px] font-semibold uppercase tracking-[0.16em] hover:bg-zinc-800"
-          >
-            {editingCustomer ? 'Update Customer' : '+ Save Customer'}
-          </button>
-        </div>
-      </form>
+        {/* Form stays mounted in DOM so test queries and entered inputs are always preserved */}
+        <form
+          onSubmit={handleSaveCustomer}
+          className={showForm ? 'border-t border-alif-border pt-4 space-y-3.5' : 'hidden'}
+        >
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block editorial-label mb-1">Full Name *</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Client full name"
+                data-testid="cust-form-name"
+                className="w-full px-3 py-2 text-base bg-white"
+              />
+            </div>
 
-      {/* Client Directory List */}
+            <div>
+              <label className="block editorial-label mb-1">Phone Number *</label>
+              <input
+                type="tel"
+                inputMode="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="10-digit mobile"
+                data-testid="cust-form-phone"
+                className="w-full px-3 py-2 text-base font-mono bg-white"
+              />
+            </div>
+
+            <div>
+              <label className="block editorial-label mb-1">Notes (Optional)</label>
+              <input
+                type="text"
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                placeholder="Measurements / preferences"
+                data-testid="cust-form-notes"
+                className="w-full px-3 py-2 text-base bg-white"
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-end">
+            <button
+              type="submit"
+              data-testid="btn-save-customer"
+              className="px-5 py-2.5 bg-alif-black text-white text-xs font-semibold uppercase tracking-wider hover:bg-zinc-800"
+            >
+              {editingCustomer ? 'Update Customer' : '+ Save Customer'}
+            </button>
+          </div>
+        </form>
+      </section>
+
+      {/* Search & Client Directory List */}
       <section className="space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2 border-b border-alif-border pb-3">
-          <div>
-            <h3 className="editorial-subhead">
-              Client Directory ({filteredCustomers.length})
-            </h3>
-          </div>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-black pb-3">
+          <h3 className="editorial-subhead">
+            Saved Clients ({filteredCustomers.length})
+          </h3>
           <input
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search"
+            placeholder="Search by name or phone..."
             aria-label="Search customers"
             data-testid="input-search-customers"
-            className="px-3 py-2 text-xs border border-alif-border bg-white w-full sm:w-64"
+            className="px-3 py-2 text-base bg-white w-full sm:w-64"
           />
         </div>
 
         {filteredCustomers.length === 0 ? (
-          <div className="p-10 text-center border border-alif-border bg-white text-xs uppercase tracking-wider text-alif-grey">
-            No clients found. Add a client above or create a new bill.
+          <div className="p-8 text-center border border-alif-border bg-white text-xs uppercase tracking-wider text-alif-grey">
+            No clients found. Tap &ldquo;+ Register Client&rdquo; above or create a new bill.
           </div>
         ) : (
           <div className="bg-white border border-alif-border divide-y">
@@ -208,27 +232,29 @@ export function CustomersView({
               };
               const isSelected = selectedHistoryCustomerId === c.id;
               return (
-                <div key={c.id} className="p-4 space-y-3">
+                <div key={c.id} className="p-3.5 sm:p-4 space-y-3">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="space-y-1">
-                      <div className="text-sm font-medium text-alif-black">
-                        {c.name}{' '}
-                        <span className="font-mono text-xs text-alif-grey ml-1.5">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-base font-semibold text-alif-black">
+                          {c.name}
+                        </span>
+                        <span className="font-mono text-sm text-alif-grey">
                           {c.phone}
                         </span>
+                        {st.balancePaise > 0 && (
+                          <span className="px-2 py-0.5 text-xs font-mono font-bold bg-stone-50 border border-black text-alif-black">
+                            Due: {formatINR(st.balancePaise)}
+                          </span>
+                        )}
                       </div>
                       {c.notes && (
                         <div className="text-xs text-alif-grey">{c.notes}</div>
                       )}
-                      <div className="flex flex-wrap gap-4 text-[11px] font-mono text-alif-grey pt-0.5">
+                      <div className="flex flex-wrap gap-3 text-xs font-mono text-alif-grey pt-0.5">
                         <span>Bills: {st.count}</span>
                         <span>Billed: {formatINR(st.billedPaise)}</span>
                         <span>Paid: {formatINR(st.paidPaise)}</span>
-                        {st.balancePaise > 0 && (
-                          <span className="font-semibold text-alif-black">
-                            Due: {formatINR(st.balancePaise)}
-                          </span>
-                        )}
                       </div>
                     </div>
 
@@ -236,7 +262,7 @@ export function CustomersView({
                       <button
                         type="button"
                         onClick={() => onStartBillForCustomer(c)}
-                        className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] bg-alif-black text-white hover:bg-zinc-800"
+                        className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider bg-alif-black text-white hover:bg-zinc-800 min-h-[40px]"
                       >
                         + New Bill
                       </button>
@@ -246,14 +272,14 @@ export function CustomersView({
                           setSelectedHistoryCustomerId(isSelected ? null : c.id)
                         }
                         data-testid={`btn-history-${c.phone}`}
-                        className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] border border-alif-border bg-white hover:border-black"
+                        className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider border border-alif-border bg-white hover:border-black min-h-[40px]"
                       >
                         {isSelected ? 'Hide History' : `History (${st.count})`}
                       </button>
                       <button
                         type="button"
                         onClick={() => startEdit(c)}
-                        className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] border border-alif-border bg-white hover:border-black"
+                        className="px-2.5 py-1.5 text-xs font-semibold uppercase tracking-wider border border-alif-border bg-white hover:border-black min-h-[40px]"
                       >
                         Edit
                       </button>
@@ -278,7 +304,7 @@ export function CustomersView({
                               className="p-2.5 flex items-center justify-between text-xs hover:bg-stone-50 cursor-pointer"
                             >
                               <div>
-                                <span className="font-mono font-semibold text-alif-black">
+                                <span className="font-mono font-bold text-alif-black">
                                   {inv.invoiceNumber}
                                 </span>{' '}
                                 <span className="font-mono text-alif-grey mx-1">
@@ -290,11 +316,11 @@ export function CustomersView({
                                 </div>
                               </div>
                               <div className="text-right font-mono">
-                                <div className="font-semibold text-alif-black">
+                                <div className="font-bold text-alif-black">
                                   {formatINR(inv.totalPaise)}
                                 </div>
                                 {inv.balancePaise > 0 && inv.status !== 'Cancelled' && (
-                                  <div className="text-[11px] text-alif-charcoal">
+                                  <div className="text-xs font-semibold text-alif-charcoal">
                                     Due {formatINR(inv.balancePaise)}
                                   </div>
                                 )}

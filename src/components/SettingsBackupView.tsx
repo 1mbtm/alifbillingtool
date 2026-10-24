@@ -170,34 +170,33 @@ export function SettingsBackupView({
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Editorial Header */}
-      <div className="border-b border-black pb-4">
+      <div className="border-b border-black pb-3.5">
         <div className="editorial-label">Atelier Configuration &amp; Archive</div>
-        <h2 className="font-serif text-xl uppercase tracking-[0.18em] text-alif-black font-normal mt-0.5">
+        <h2 className="editorial-heading mt-0.5">
           Backup &amp; Shop Settings
         </h2>
       </div>
 
       {/* Local-Only Storage Notice */}
-      <section className="bg-white border border-alif-border p-4 space-y-1.5">
+      <section className="bg-stone-50 border border-alif-border p-4 space-y-1.5">
         <div className="editorial-subhead">
           Offline Local Storage &amp; Data Protection Notice
         </div>
         <p className="text-xs text-alif-charcoal leading-relaxed">
           All client records, tailoring bills, catalogue rates and payment ledgers are stored
           exclusively on this device in browser IndexedDB (<code>alif_ladies_tailor_db</code>).
-          Zero customer data is transmitted to external servers. Clearing browser data or changing
-          devices will erase unsaved records — export a validated JSON backup regularly.
+          Zero customer data is transmitted to external servers. Export a validated JSON backup regularly.
         </p>
       </section>
 
       {/* JSON Backup & Validated Restore */}
-      <section className="bg-white border border-alif-border p-5 space-y-5">
+      <section className="bg-white border border-alif-border p-4 sm:p-5 space-y-5">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-alif-border pb-4">
           <div>
             <h3 className="editorial-subhead">01 / Validated JSON Backup &amp; CSV Export</h3>
-            <p className="text-[11px] font-mono text-alif-grey mt-1">
+            <p className="text-xs font-mono text-alif-grey mt-1">
               {customers.length} clients • {catalogue.length} catalogue items • {invoices.length} invoices • {payments.length} payments
             </p>
           </div>
@@ -205,7 +204,7 @@ export function SettingsBackupView({
             type="button"
             onClick={handleExportJsonBackup}
             data-testid="btn-export-json-backup"
-            className="px-4 py-2.5 bg-alif-black text-white text-[10px] font-semibold uppercase tracking-[0.15em] hover:bg-zinc-800 shrink-0"
+            className="px-4 py-2.5 bg-alif-black text-white text-xs font-semibold uppercase tracking-wider hover:bg-zinc-800 shrink-0"
           >
             Download Full JSON Backup
           </button>
@@ -220,7 +219,7 @@ export function SettingsBackupView({
                 triggerTextFileDownload('ALiF-Invoices.csv', generateInvoicesCsv(invoices));
                 onNotify('Exported ALiF-Invoices.csv');
               }}
-              className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] border border-alif-border bg-white hover:border-black"
+              className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider border border-alif-border bg-white hover:border-black min-h-[40px]"
             >
               Export Invoices CSV
             </button>
@@ -230,7 +229,7 @@ export function SettingsBackupView({
                 triggerTextFileDownload('ALiF-Payments.csv', generatePaymentsCsv(payments));
                 onNotify('Exported ALiF-Payments.csv');
               }}
-              className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] border border-alif-border bg-white hover:border-black"
+              className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider border border-alif-border bg-white hover:border-black min-h-[40px]"
             >
               Export Payments CSV
             </button>
@@ -240,7 +239,7 @@ export function SettingsBackupView({
                 triggerTextFileDownload('ALiF-Customers.csv', generateCustomersCsv(customers));
                 onNotify('Exported ALiF-Customers.csv');
               }}
-              className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] border border-alif-border bg-white hover:border-black"
+              className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider border border-alif-border bg-white hover:border-black min-h-[40px]"
             >
               Export Customers CSV
             </button>
@@ -250,7 +249,7 @@ export function SettingsBackupView({
                 triggerTextFileDownload('ALiF-Catalogue.csv', generateCatalogueCsv(catalogue));
                 onNotify('Exported ALiF-Catalogue.csv');
               }}
-              className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] border border-alif-border bg-white hover:border-black"
+              className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider border border-alif-border bg-white hover:border-black min-h-[40px]"
             >
               Export Catalogue CSV
             </button>
@@ -268,16 +267,17 @@ export function SettingsBackupView({
             type="file"
             accept=".json,application/json"
             onChange={handleFileUpload}
-            className="block w-full text-xs text-alif-charcoal p-2 border border-alif-border bg-stone-50"
+            className="block w-full text-sm text-alif-charcoal p-2 border border-alif-border bg-stone-50"
           />
 
           <textarea
-            rows={4}
+            rows={3}
             value={jsonImportText}
             onChange={(e) => handleValidateImportText(e.target.value)}
+            placeholder="Or paste raw backup JSON here..."
             aria-label="Backup JSON"
             data-testid="textarea-restore-json"
-            className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
+            className="w-full px-3 py-2 text-base font-mono bg-white"
           />
 
           {validationResult && (
@@ -287,12 +287,12 @@ export function SettingsBackupView({
             >
               {validationResult.valid ? (
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <span>✓ {validationResult.summary}</span>
+                  <span className="font-medium">✓ {validationResult.summary}</span>
                   <button
                     type="button"
                     onClick={() => setConfirmRestoreOpen(true)}
                     data-testid="btn-trigger-restore"
-                    className="px-4 py-2 bg-alif-black text-white text-[10px] font-semibold uppercase tracking-[0.14em] hover:bg-zinc-800 shrink-0"
+                    className="px-4 py-2 bg-alif-black text-white text-xs font-semibold uppercase tracking-wider hover:bg-zinc-800 shrink-0"
                   >
                     Restore Validated Backup
                   </button>
@@ -317,7 +317,7 @@ export function SettingsBackupView({
       {/* Shop & Billing Configuration Form */}
       <form
         onSubmit={handleSaveSettings}
-        className="bg-white border border-alif-border p-5 space-y-5"
+        className="bg-white border border-alif-border p-4 sm:p-5 space-y-5"
       >
         <div className="border-b border-alif-border pb-3">
           <h3 className="editorial-subhead">
@@ -333,7 +333,7 @@ export function SettingsBackupView({
               value={shopName}
               onChange={(e) => setShopName(e.target.value)}
               data-testid="settings-shop-name"
-              className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
+              className="w-full px-3 py-2 text-base bg-white"
             />
           </div>
 
@@ -343,7 +343,7 @@ export function SettingsBackupView({
               type="text"
               value={tagline}
               onChange={(e) => setTagline(e.target.value)}
-              className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
+              className="w-full px-3 py-2 text-base bg-white"
             />
           </div>
 
@@ -353,7 +353,7 @@ export function SettingsBackupView({
               type="text"
               value={address}
               onChange={(e) => setAddress(e.target.value)}
-              className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
+              className="w-full px-3 py-2 text-base bg-white"
             />
           </div>
 
@@ -364,7 +364,7 @@ export function SettingsBackupView({
                 type="text"
                 value={city}
                 onChange={(e) => setCity(e.target.value)}
-                className="w-full px-2.5 py-2 text-xs border border-alif-border bg-white"
+                className="w-full px-2.5 py-2 text-base bg-white"
               />
             </div>
             <div>
@@ -373,16 +373,17 @@ export function SettingsBackupView({
                 type="text"
                 value={state}
                 onChange={(e) => setState(e.target.value)}
-                className="w-full px-2.5 py-2 text-xs border border-alif-border bg-white"
+                className="w-full px-2.5 py-2 text-base bg-white"
               />
             </div>
             <div>
               <label className="block editorial-label mb-1">PIN</label>
               <input
                 type="text"
+                inputMode="numeric"
                 value={pinCode}
                 onChange={(e) => setPinCode(e.target.value)}
-                className="w-full px-2.5 py-2 text-xs font-mono border border-alif-border bg-white"
+                className="w-full px-2.5 py-2 text-base font-mono bg-white"
               />
             </div>
           </div>
@@ -390,20 +391,22 @@ export function SettingsBackupView({
           <div>
             <label className="block editorial-label mb-1">Shop Phone</label>
             <input
-              type="text"
+              type="tel"
+              inputMode="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
+              className="w-full px-3 py-2 text-base font-mono bg-white"
             />
           </div>
 
           <div>
             <label className="block editorial-label mb-1">Shop WhatsApp Number</label>
             <input
-              type="text"
+              type="tel"
+              inputMode="tel"
               value={whatsappNumber}
               onChange={(e) => setWhatsappNumber(e.target.value)}
-              className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
+              className="w-full px-3 py-2 text-base font-mono bg-white"
             />
           </div>
         </div>
@@ -416,7 +419,7 @@ export function SettingsBackupView({
               value={invoicePrefix}
               onChange={(e) => setInvoicePrefix(e.target.value)}
               data-testid="settings-invoice-prefix"
-              className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
+              className="w-full px-3 py-2 text-base font-mono bg-white"
             />
           </div>
 
@@ -424,10 +427,11 @@ export function SettingsBackupView({
             <label className="block editorial-label mb-1">Next Sequence Number</label>
             <input
               type="number"
+              inputMode="numeric"
               min="1"
               value={nextInvoiceSequence}
               onChange={(e) => setNextInvoiceSequence(e.target.value)}
-              className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
+              className="w-full px-3 py-2 text-base font-mono bg-white"
             />
           </div>
 
@@ -436,7 +440,7 @@ export function SettingsBackupView({
             <select
               value={defaultPaymentMethod}
               onChange={(e) => setDefaultPaymentMethod(e.target.value as PaymentMethod)}
-              className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
+              className="w-full px-3 py-2 text-base bg-white"
             >
               {(['cash', 'upi', 'bank_transfer', 'other'] as PaymentMethod[]).map((m) => (
                 <option key={m} value={m}>
@@ -449,16 +453,16 @@ export function SettingsBackupView({
 
         {/* Tax Toggle (Disabled by default; never assume GST registration) */}
         <div className="bg-stone-50 border border-alif-border p-3.5 space-y-2">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <div>
               <div className="text-xs font-semibold uppercase tracking-wider text-alif-black">
                 Optional Tax Line (Disabled by Default)
               </div>
-              <div className="text-[11px] text-alif-grey">
+              <div className="text-xs text-alif-grey">
                 GST registration is never assumed. Leave disabled for standard non-tax tailoring bills.
               </div>
             </div>
-            <label className="inline-flex items-center gap-2 text-xs uppercase tracking-wider font-semibold">
+            <label className="inline-flex items-center gap-2 text-xs uppercase tracking-wider font-semibold shrink-0 cursor-pointer">
               <input
                 type="checkbox"
                 checked={taxEnabled}
@@ -476,19 +480,20 @@ export function SettingsBackupView({
                   type="text"
                   value={taxLabel}
                   onChange={(e) => setTaxLabel(e.target.value)}
-                  className="w-full px-2.5 py-1.5 text-xs border border-alif-border bg-white"
+                  className="w-full px-2.5 py-1.5 text-base bg-white"
                 />
               </div>
               <div>
                 <label className="block editorial-label mb-1">Tax Percentage (%)</label>
                 <input
                   type="number"
+                  inputMode="decimal"
                   min="0"
                   max="50"
                   step="any"
                   value={taxRatePercent}
                   onChange={(e) => setTaxRatePercent(e.target.value)}
-                  className="w-full px-2.5 py-1.5 text-xs font-mono border border-alif-border bg-white"
+                  className="w-full px-2.5 py-1.5 text-base font-mono bg-white"
                 />
               </div>
             </div>
@@ -501,7 +506,7 @@ export function SettingsBackupView({
             type="text"
             value={receiptFooter}
             onChange={(e) => setReceiptFooter(e.target.value)}
-            className="w-full px-3 py-2 text-xs border border-alif-border bg-white"
+            className="w-full px-3 py-2 text-base bg-white"
           />
         </div>
 
@@ -509,7 +514,7 @@ export function SettingsBackupView({
           <button
             type="submit"
             data-testid="btn-save-settings"
-            className="px-6 py-2.5 bg-alif-black text-white text-[10px] font-semibold uppercase tracking-[0.16em] hover:bg-zinc-800"
+            className="px-6 py-2.5 bg-alif-black text-white text-xs font-semibold uppercase tracking-wider hover:bg-zinc-800"
           >
             Save Shop Settings
           </button>

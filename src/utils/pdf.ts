@@ -1500,3 +1500,323 @@ export async function shareBillImageAndText(input: {
     statusMessage: `Downloaded ${downloadedFilename} and opened WhatsApp. Attach the downloaded bill image manually in WhatsApp before tapping Send.`
   };
 }
+
+// ============================================================================
+// SIMPLIFIED 3-ACTION BILL SHARING (WHATSAPP, SMS, DOWNLOAD BILL PDF)
+// ============================================================================
+
+export function buildSmsUrlWithCustomText(phone: string, text: string): string {
+  const digits = normalizeIndianPhone(phone);
+  const target = digits ? `+${digits}` : '';
+  const plainText = String(text || '').replace(/\*/g, '').trim();
+  return plainText
+    ? `sms:${target}?body=${encodeURIComponent(plainText)}`
+    : `sms:${target}`;
+}
+
+export interface UnifiedShareOutcome {
+  channel: 'whatsapp' | 'sms';
+  includeImage: boolean;
+  includeText: boolean;
+  sentAutomatically: false; // Browser PWA never silently sends messages without user action in the app
+  sharedViaNativeFile: boolean;
+  method:
+    | 'native-file-share'
+    | 'whatsapp-image-and-text-fallback'
+    | 'whatsapp-image-only-fallback'
+    | 'whatsapp-text-only'
+    | 'sms-text-composer'
+    | 'sms-image-limitation-prompt'
+    | 'sms-text-plus-image-download'
+    | 'cancelled';
+  smsImageLimitation?: boolean;
+  downloadedFilename?: string;
+  targetUrl?: string;
+  manualAttachRequired: boolean;
+  instructions: string;
+  statusMessage: string;
+}
+
+/**
+ * Validates that at least one of Bill Image or Bill Summary Text is selected.
+ */
+export function validateShareContentSelection(options: {
+  includeImage: boolean;
+  includeText: boolean;
+}): string | null {
+  if (!options.includeImage && !options.includeText) {
+    return 'Please select at least one option to share: Bill Image or Bill Summary Text.';
+  }
+  return null;
+}
+
+/**
+ * Shares a bill via WhatsApp respecting the user's checkboxes:
+ * - Bill Image + Bill Summary Text (default)
+ * - Bill Image only
+ * - Bill Summary Text only
+ */
+export async function shareBillViaWhatsApp(input: {
+  invoice: Invoice;
+  payments: PaymentRecord[];
+  settings: ShopSettings;
+  includeImage: boolean;
+  includeText: boolean;
+  customText?: string;
+  billImage?: GeneratedBillImage | null;
+  photosMap?: Record<string, ItemPhotoRecord>;
+  includePhotos?: boolean;
+  openWindow?: boolean;
+}): Promise<UnifiedShareOutcome> {
+  const validationError = validateShareContentSelection({
+    includeImage: input.includeImage,
+    includeText: input.includeText
+  });
+  if (validationError) {
+    throw new Error(validationError);
+  }
+
+  const { invoice, payments, settings, includeImage, includeText } = input;
+  const messageText = includeText
+    ? (input.customText ?? '').trim() || buildShareBillText(invoice, settings)
+    : '';
+  const whatsappUrl = buildWhatsAppUrlWithCustomText(invoice.customerPhone, messageText);
+
+  // Case 1: Text Only (Bill Image unchecked, Bill Summary Text checked)
+  if (!includeImage && includeText) {
+    if (input.openWindow !== false && typeof window !== 'undefined' && typeof window.open === 'function') {
+      try {
+        window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+      } catch (_e) {
+        // Ignore popup block in test environments
+      }
+    }
+    return {
+      channel: 'whatsapp',
+      includeImage: false,
+      includeText: true,
+      sentAutomatically: false,
+      sharedViaNativeFile: false,
+      method: 'whatsapp-text-only',
+      targetUrl: whatsappUrl,
+      manualAttachRequired: false,
+      instructions:
+        'WhatsApp opened with the prefilled bill summary text. Review and tap Send inside WhatsApp.',
+      statusMessage: 'Opened WhatsApp with bill summary text.'
+    };
+  }
+
+  // Case 2 & 3: Bill Image is checked (with or without Bill Summary Text)
+  const resolvedImage =
+    input.billImage ||
+    (await generateInvoiceBillImage(invoice, payments, settings, {
+      photosMap: input.photosMap,
+      includePhotos: input.includePhotos !== false,
+      format: 'image/png'
+    }));
+
+  if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+    try {
+      const imageFile: File =
+        typeof File === 'function'
+          ? new File([resolvedImage.blob], resolvedImage.filename, {
+              type: resolvedImage.mimeType
+            })
+          : (Object.assign(
+              new Blob([resolvedImage.blob], { type: resolvedImage.mimeType }),
+              { name: resolvedImage.filename, lastModified: Date.now() }
+            ) as unknown as File);
+
+      const canShareFiles =
+        typeof navigator.canShare === 'function' &&
+        navigator.canShare({ files: [imageFile] });
+
+      if (canShareFiles) {
+        const sharePayload: ShareData = {
+          title: `alif. — Bill ${invoice.invoiceNumber}`,
+          files: [imageFile]
+        };
+        if (includeText && messageText) {
+          sharePayload.text = messageText;
+        }
+        await navigator.share(sharePayload);
+        return {
+          channel: 'whatsapp',
+          includeImage: true,
+          includeText,
+          sentAutomatically: false,
+          sharedViaNativeFile: true,
+          method: 'native-file-share',
+          targetUrl: whatsappUrl,
+          manualAttachRequired: false,
+          instructions: includeText
+            ? 'Select WhatsApp in the share sheet and tap Send to share both the bill image and summary text.'
+            : 'Select WhatsApp in the share sheet and tap Send to share the bill image.',
+          statusMessage: includeText
+            ? 'Opened share sheet with bill image and summary text.'
+            : 'Opened share sheet with bill image only.'
+        };
+      }
+    } catch (err: any) {
+      if (
+        err &&
+        (err.name === 'AbortError' ||
+          String(err.message || '').toLowerCase().includes('abort'))
+      ) {
+        return {
+          channel: 'whatsapp',
+          includeImage: true,
+          includeText,
+          sentAutomatically: false,
+          sharedViaNativeFile: false,
+          method: 'cancelled',
+          targetUrl: whatsappUrl,
+          manualAttachRequired: false,
+          instructions: 'Share sheet was closed before sending.',
+          statusMessage: 'Sharing cancelled.'
+        };
+      }
+    }
+  }
+
+  // Fallback when Web Share Level 2 file sharing is unavailable
+  const downloadedFilename = downloadBillImage(resolvedImage);
+  if (input.openWindow !== false && typeof window !== 'undefined' && typeof window.open === 'function') {
+    try {
+      window.open(whatsappUrl, '_blank', 'noopener,noreferrer');
+    } catch (_e) {
+      // Ignore popup blocker
+    }
+  }
+
+  return {
+    channel: 'whatsapp',
+    includeImage: true,
+    includeText,
+    sentAutomatically: false,
+    sharedViaNativeFile: false,
+    method: includeText
+      ? 'whatsapp-image-and-text-fallback'
+      : 'whatsapp-image-only-fallback',
+    downloadedFilename,
+    targetUrl: whatsappUrl,
+    manualAttachRequired: true,
+    instructions: includeText
+      ? `1. "${downloadedFilename}" has been saved to your device. 2. WhatsApp is open with the bill summary text. 3. Attach "${downloadedFilename}" in WhatsApp and tap Send.`
+      : `1. "${downloadedFilename}" has been saved to your device. 2. Attach "${downloadedFilename}" in WhatsApp and tap Send.`,
+    statusMessage: includeText
+      ? `Downloaded ${downloadedFilename} and opened WhatsApp with summary text. Attach the image in WhatsApp before sending.`
+      : `Downloaded ${downloadedFilename} and opened WhatsApp. Attach the image in WhatsApp before sending.`
+  };
+}
+
+/**
+ * Shares a bill via SMS (`sms:` URI composer) with explicit handling when Bill Image is selected:
+ * - Standard SMS (`sms:`) cannot directly attach PNG/JPEG images like WhatsApp.
+ * - Never silently drops the Bill Image when `includeImage` is true: returns `smsImageLimitation: true`
+ *   unless the user explicitly selects an SMS fallback resolution (`resolution: 'text-only' | 'download-image-and-sms'`).
+ * - Never claims an SMS was sent automatically when only the device SMS composer was opened.
+ */
+export async function shareBillViaSms(input: {
+  invoice: Invoice;
+  payments: PaymentRecord[];
+  settings: ShopSettings;
+  includeImage: boolean;
+  includeText: boolean;
+  customText?: string;
+  billImage?: GeneratedBillImage | null;
+  photosMap?: Record<string, ItemPhotoRecord>;
+  includePhotos?: boolean;
+  resolution?: 'prompt' | 'text-only' | 'download-image-and-sms';
+  openWindow?: boolean;
+}): Promise<UnifiedShareOutcome> {
+  const validationError = validateShareContentSelection({
+    includeImage: input.includeImage,
+    includeText: input.includeText
+  });
+  if (validationError) {
+    throw new Error(validationError);
+  }
+
+  const { invoice, payments, settings, includeImage, includeText } = input;
+  const resolution = input.resolution || 'prompt';
+  const summaryText =
+    (input.customText ?? '').trim() || buildShareBillText(invoice, settings);
+  const smsUrl = buildSmsUrlWithCustomText(invoice.customerPhone, summaryText);
+
+  // If Bill Image is selected and the user hasn't picked a resolution yet,
+  // do NOT silently omit the image — explain the SMS limitation clearly and offer alternatives.
+  if (includeImage && resolution === 'prompt') {
+    return {
+      channel: 'sms',
+      includeImage: true,
+      includeText,
+      sentAutomatically: false,
+      sharedViaNativeFile: false,
+      method: 'sms-image-limitation-prompt',
+      smsImageLimitation: true,
+      targetUrl: smsUrl,
+      manualAttachRequired: true,
+      instructions:
+        'Standard SMS cannot attach bill images directly like WhatsApp. Choose whether to open the SMS composer with the bill summary text only, download the bill image + open SMS, or share via WhatsApp instead.',
+      statusMessage:
+        'Standard SMS cannot attach images directly. Please choose how you would like to proceed.'
+    };
+  }
+
+  if (includeImage && resolution === 'download-image-and-sms') {
+    const resolvedImage =
+      input.billImage ||
+      (await generateInvoiceBillImage(invoice, payments, settings, {
+        photosMap: input.photosMap,
+        includePhotos: input.includePhotos !== false,
+        format: 'image/png'
+      }));
+    const downloadedFilename = downloadBillImage(resolvedImage);
+    if (input.openWindow !== false && typeof window !== 'undefined' && typeof window.open === 'function') {
+      try {
+        window.open(smsUrl, '_self');
+      } catch (_e) {
+        // Ignore navigation error in headless environment
+      }
+    }
+    return {
+      channel: 'sms',
+      includeImage: true,
+      includeText: true,
+      sentAutomatically: false,
+      sharedViaNativeFile: false,
+      method: 'sms-text-plus-image-download',
+      smsImageLimitation: true,
+      downloadedFilename,
+      targetUrl: smsUrl,
+      manualAttachRequired: true,
+      instructions: `Saved "${downloadedFilename}" to your device and opened your SMS composer with the bill summary text. Review and tap Send in your SMS app (PWA browsers cannot send SMS automatically without user confirmation).`,
+      statusMessage: `Downloaded ${downloadedFilename} and opened SMS composer with summary text. Tap Send in your SMS app.`
+    };
+  }
+
+  // Default SMS text composer (when includeImage is false, or resolution === 'text-only')
+  if (input.openWindow !== false && typeof window !== 'undefined' && typeof window.open === 'function') {
+    try {
+      window.open(smsUrl, '_self');
+    } catch (_e) {
+      // Ignore navigation error in headless environment
+    }
+  }
+
+  return {
+    channel: 'sms',
+    includeImage: false,
+    includeText: true,
+    sentAutomatically: false,
+    sharedViaNativeFile: false,
+    method: 'sms-text-composer',
+    targetUrl: smsUrl,
+    manualAttachRequired: false,
+    instructions:
+      'Opened your phone’s native SMS composer prefilled with the customer number and bill summary. Please tap Send inside your SMS app (offline web apps cannot transmit SMS silently in the background).',
+    statusMessage:
+      'Opened native SMS composer with prefilled bill summary. Review and tap Send in your SMS app.'
+  };
+}

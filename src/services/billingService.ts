@@ -1,5 +1,10 @@
 import { ALIFBillingDatabase, db as defaultDb } from '../db/database';
-import { DEFAULT_CATALOGUE_ITEMS, DEFAULT_SHOP_SETTINGS } from '../db/seed';
+import {
+  DEFAULT_CATALOGUE_ITEMS,
+  DEFAULT_INVENTORY_BUNDLES,
+  DEFAULT_INVENTORY_VARIANTS,
+  DEFAULT_SHOP_SETTINGS
+} from '../db/seed';
 import {
   BackupPayload,
   CatalogueCategory,
@@ -7,6 +12,9 @@ import {
   Customer,
   DashboardMetrics,
   DiscountType,
+  InventoryBundle,
+  InventoryMovement,
+  InventoryVariant,
   Invoice,
   InvoiceLineItem,
   ItemPhotoRecord,
@@ -15,7 +23,9 @@ import {
   PaymentRecordType,
   PaymentStatus,
   PeriodReport,
-  ShopSettings
+  ShopSettings,
+  StockAllocation,
+  StockStatus
 } from '../types/billing';
 import {
   calculateInvoiceTotals,
@@ -23,8 +33,71 @@ import {
   computePaymentLedger,
   formatInvoiceNumber
 } from '../utils/currency';
+import {
+  formatStockQuantity,
+  getVariantStockStatus,
+  searchInventoryVariants
+} from '../utils/search';
 
 const activeSubmissionLocks = new Set<string>();
+const memoryPhotoFallback = new Map<string, ItemPhotoRecord>();
+
+/**
+ * Fractional quantity helpers using integer thousandths (milli-units)
+ * so 1.2m + 2.5m + 3.25m never suffers IEEE-754 floating-point drift.
+ */
+export function toQtyUnits(qty: number): number {
+  const num = Number(qty);
+  if (!Number.isFinite(num)) return 0;
+  return Math.round(num * 1000);
+}
+
+export function fromQtyUnits(units: number): number {
+  return Math.round(units) / 1000;
+}
+
+export function roundStockQty(qty: number): number {
+  return fromQtyUnits(toQtyUnits(qty));
+}
+
+function canUseItemPhotosStore(database: ALIFBillingDatabase): boolean {
+  try {
+    if (!database || !database.itemPhotos) return false;
+    if (typeof database.hasObjectStore === 'function') {
+      return database.hasObjectStore('itemPhotos');
+    }
+    const backend = (database as any).backendDB?.();
+    if (backend && backend.objectStoreNames && typeof backend.objectStoreNames.contains === 'function') {
+      return backend.objectStoreNames.contains('itemPhotos');
+    }
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
+
+function canUseInventoryStores(database: ALIFBillingDatabase): boolean {
+  try {
+    if (
+      !database ||
+      !database.inventoryVariants ||
+      !database.inventoryBundles ||
+      !database.inventoryMovements
+    ) {
+      return false;
+    }
+    if (typeof database.hasObjectStore === 'function') {
+      return (
+        database.hasObjectStore('inventoryVariants') &&
+        database.hasObjectStore('inventoryBundles') &&
+        database.hasObjectStore('inventoryMovements')
+      );
+    }
+    return true;
+  } catch (_err) {
+    return false;
+  }
+}
 
 export function generateId(prefix: string): string {
   const rand = Math.random().toString(36).slice(2, 9);
@@ -195,7 +268,7 @@ export async function getCustomerHistory(
 }
 
 // ============================================================================
-// 3. CATALOGUE
+// 3. CATALOGUE & FREQUENTLY USED PRODUCTS
 // ============================================================================
 
 export interface SaveCatalogueItemInput {
@@ -209,6 +282,13 @@ export interface SaveCatalogueItemInput {
   unit: string;
   description?: string;
   isActive?: boolean;
+  inventoryVariantId?: string | null;
+  productType?: string;
+  workDesign?: string;
+  color?: string;
+  isPinned?: boolean;
+  photoId?: string;
+  photoDataUrl?: string;
 }
 
 export async function listCatalogue(
@@ -230,6 +310,9 @@ export async function listCatalogue(
       (i) =>
         i.name.toLowerCase().includes(q) ||
         i.unit.toLowerCase().includes(q) ||
+        (i.productType && i.productType.toLowerCase().includes(q)) ||
+        (i.workDesign && i.workDesign.toLowerCase().includes(q)) ||
+        (i.color && i.color.toLowerCase().includes(q)) ||
         (i.description && i.description.toLowerCase().includes(q))
     );
   }
@@ -270,6 +353,10 @@ export async function saveCatalogueItem(
       ? Math.max(0, Math.round(Number(input.maxPricePaise)))
       : undefined;
 
+  // Tailoring services never link to physical stock
+  const inventoryVariantId =
+    input.category === 'service' ? null : input.inventoryVariantId ?? undefined;
+
   const now = new Date().toISOString();
   if (input.id) {
     const existing = await database.catalogue.get(input.id);
@@ -282,8 +369,16 @@ export async function saveCatalogueItem(
       maxPricePaise,
       costPricePaise,
       unit,
-      description: input.description?.trim() || '',
+      description: input.description !== undefined ? input.description.trim() : existing?.description || '',
       isActive: input.isActive !== undefined ? input.isActive : existing ? existing.isActive : true,
+      inventoryVariantId:
+        inventoryVariantId !== undefined ? inventoryVariantId : existing?.inventoryVariantId ?? null,
+      productType: input.productType !== undefined ? input.productType.trim() : existing?.productType,
+      workDesign: input.workDesign !== undefined ? input.workDesign.trim() : existing?.workDesign,
+      color: input.color !== undefined ? input.color.trim() : existing?.color,
+      isPinned: input.isPinned !== undefined ? input.isPinned : existing?.isPinned,
+      photoId: input.photoId !== undefined ? input.photoId : existing?.photoId,
+      photoDataUrl: input.photoDataUrl !== undefined ? input.photoDataUrl : existing?.photoDataUrl,
       createdAt: existing ? existing.createdAt : now,
       updatedAt: now
     };
@@ -302,6 +397,13 @@ export async function saveCatalogueItem(
     unit,
     description: input.description?.trim() || '',
     isActive: input.isActive !== undefined ? input.isActive : true,
+    inventoryVariantId: inventoryVariantId ?? null,
+    productType: input.productType?.trim() || undefined,
+    workDesign: input.workDesign?.trim() || undefined,
+    color: input.color?.trim() || undefined,
+    isPinned: Boolean(input.isPinned),
+    photoId: input.photoId,
+    photoDataUrl: input.photoDataUrl,
     createdAt: now,
     updatedAt: now
   };
@@ -309,13 +411,922 @@ export async function saveCatalogueItem(
   return created;
 }
 
+export async function toggleCatalogueItemPin(
+  catalogueItemId: string,
+  isPinned?: boolean,
+  database: ALIFBillingDatabase = defaultDb
+): Promise<CatalogueItem> {
+  await database.ensureSeeded();
+  const existing = await database.catalogue.get(catalogueItemId);
+  if (!existing) {
+    throw new Error('Catalogue item not found');
+  }
+  const updated: CatalogueItem = {
+    ...existing,
+    isPinned: isPinned !== undefined ? isPinned : !existing.isPinned,
+    updatedAt: new Date().toISOString()
+  };
+  await database.catalogue.put(updated);
+  return updated;
+}
+
 export async function resetDefaultCatalogue(database: ALIFBillingDatabase = defaultDb): Promise<void> {
   await database.ensureSeeded();
   await database.catalogue.bulkPut(DEFAULT_CATALOGUE_ITEMS.map((item) => ({ ...item })));
 }
 
+export interface FrequentlyUsedEntry {
+  item: CatalogueItem;
+  variant?: InventoryVariant;
+  invoiceUsageCount: number;
+  totalQuantityBilled: number;
+  isPinned: boolean;
+}
+
+/**
+ * Computes Frequently Used Products & Services for New Bill:
+ * Combines manually pinned/favourite items with automatic ranking from actual saved non-cancelled invoices.
+ * Never fabricates usage counts when invoice history is empty.
+ */
+export async function getFrequentlyUsedItems(
+  limit = 8,
+  database: ALIFBillingDatabase = defaultDb
+): Promise<FrequentlyUsedEntry[]> {
+  await database.ensureSeeded();
+  const [catalogue, invoices, variants] = await Promise.all([
+    database.catalogue.toArray(),
+    database.invoices.toArray(),
+    canUseInventoryStores(database) ? database.inventoryVariants.toArray() : Promise.resolve([])
+  ]);
+
+  const variantMap = new Map<string, InventoryVariant>();
+  for (const v of variants) {
+    variantMap.set(v.id, v);
+  }
+
+  const usageByCatalogueId = new Map<string, { count: number; qty: number }>();
+  const usageByVariantId = new Map<string, { count: number; qty: number }>();
+
+  for (const inv of invoices) {
+    if (inv.status === 'Cancelled') continue;
+    for (const line of inv.items) {
+      if (line.catalogueItemId) {
+        const cur = usageByCatalogueId.get(line.catalogueItemId) || { count: 0, qty: 0 };
+        cur.count += 1;
+        cur.qty = roundStockQty(cur.qty + Number(line.quantity || 0));
+        usageByCatalogueId.set(line.catalogueItemId, cur);
+      }
+      if (line.inventoryVariantId) {
+        const curV = usageByVariantId.get(line.inventoryVariantId) || { count: 0, qty: 0 };
+        curV.count += 1;
+        curV.qty = roundStockQty(curV.qty + Number(line.quantity || 0));
+        usageByVariantId.set(line.inventoryVariantId, curV);
+      }
+    }
+  }
+
+  const entries: FrequentlyUsedEntry[] = [];
+  for (const item of catalogue) {
+    if (!item.isActive) continue;
+    const linkedVariant = item.inventoryVariantId
+      ? variantMap.get(item.inventoryVariantId)
+      : undefined;
+    const catUsage = usageByCatalogueId.get(item.id) || { count: 0, qty: 0 };
+    const varUsage =
+      item.inventoryVariantId && usageByVariantId.get(item.inventoryVariantId)
+        ? usageByVariantId.get(item.inventoryVariantId)!
+        : { count: 0, qty: 0 };
+
+    const invoiceUsageCount = Math.max(catUsage.count, varUsage.count);
+    const totalQuantityBilled = Math.max(catUsage.qty, varUsage.qty);
+    const isPinned = Boolean(item.isPinned || linkedVariant?.isPinned);
+
+    if (isPinned || invoiceUsageCount > 0) {
+      entries.push({
+        item,
+        variant: linkedVariant,
+        invoiceUsageCount,
+        totalQuantityBilled,
+        isPinned
+      });
+    }
+  }
+
+  entries.sort((a, b) => {
+    // Rank items with actual invoice history or pinned status first
+    if (b.invoiceUsageCount !== a.invoiceUsageCount) {
+      return b.invoiceUsageCount - a.invoiceUsageCount;
+    }
+    if (a.isPinned !== b.isPinned) {
+      return a.isPinned ? -1 : 1;
+    }
+    return a.item.name.localeCompare(b.item.name);
+  });
+
+  return entries.slice(0, limit);
+}
+
 // ============================================================================
-// 4. INVOICE CREATION, NUMBERING & DUPLICATE PREVENTION
+// 4. INVENTORY MANAGEMENT (VARIANTS, BUNDLES/ROLLS, FIFO & MOVEMENTS)
+// ============================================================================
+
+export interface SaveInventoryVariantInput {
+  id?: string;
+  sku?: string;
+  name?: string;
+  category: string;
+  productType: string;
+  workDesign: string;
+  color: string;
+  unit: string;
+  purchaseCostPaise: number;
+  defaultSellingPricePaise: number;
+  lowStockThreshold?: number;
+  photoId?: string;
+  photoDataUrl?: string;
+  notes?: string;
+  isActive?: boolean;
+  isPinned?: boolean;
+  initialBundleQuantity?: number;
+  initialBundleDate?: string;
+  initialBundleSupplier?: string;
+  initialBundleCode?: string;
+  initialBundlePhotoDataUrl?: string;
+  createLinkedCatalogueItem?: boolean;
+}
+
+function buildSkuFromHierarchy(
+  category: string,
+  productType: string,
+  workDesign: string,
+  color: string
+): string {
+  const clean = (s: string, len = 3) =>
+    String(s || 'X')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '')
+      .slice(0, len) || 'ITM';
+  return `${clean(category, 3)}-${clean(productType, 4)}-${clean(workDesign, 3)}-${clean(color, 3)}`;
+}
+
+async function recalculateVariantTotalInTx(
+  variantId: string,
+  database: ALIFBillingDatabase
+): Promise<number> {
+  const bundles = await database.inventoryBundles.where('variantId').equals(variantId).toArray();
+  let totalMilli = 0;
+  for (const b of bundles) {
+    if (b.remainingQuantity > 0) {
+      totalMilli += toQtyUnits(b.remainingQuantity);
+    }
+  }
+  const totalQuantity = fromQtyUnits(Math.max(0, totalMilli));
+  const variant = await database.inventoryVariants.get(variantId);
+  if (variant) {
+    await database.inventoryVariants.put({
+      ...variant,
+      totalQuantity,
+      updatedAt: new Date().toISOString()
+    });
+  }
+  return totalQuantity;
+}
+
+export async function saveInventoryVariant(
+  input: SaveInventoryVariantInput,
+  database: ALIFBillingDatabase = defaultDb
+): Promise<{ variant: InventoryVariant; initialBundle?: InventoryBundle }> {
+  await database.ensureSeeded();
+  const category = String(input.category || '').trim();
+  const productType = String(input.productType || '').trim();
+  const workDesign = String(input.workDesign || '').trim() || 'Standard';
+  const color = String(input.color || '').trim();
+  const unit = String(input.unit || 'm').trim() || 'm';
+
+  if (!category) throw new Error('Inventory category is required (e.g. Fabric)');
+  if (!productType) throw new Error('Product type is required (e.g. Fandy Silk)');
+  if (!color) throw new Error('Colour is required to keep variants distinct');
+
+  const autoName = `${color} ${productType} — ${workDesign}`;
+  const name = String(input.name || '').trim() || autoName;
+  const purchaseCostPaise = Math.max(0, Math.round(Number(input.purchaseCostPaise || 0)));
+  const defaultSellingPricePaise = Math.max(
+    0,
+    Math.round(Number(input.defaultSellingPricePaise || 0))
+  );
+  const lowStockThreshold = Math.max(0, roundStockQty(Number(input.lowStockThreshold ?? 3)));
+  const now = new Date().toISOString();
+
+  return await database.transaction(
+    'rw',
+    database.inventoryVariants,
+    database.inventoryBundles,
+    database.inventoryMovements,
+    database.catalogue,
+    async () => {
+      let variant: InventoryVariant;
+      let initialBundle: InventoryBundle | undefined;
+
+      if (input.id) {
+        const existing = await database.inventoryVariants.get(input.id);
+        if (!existing) {
+          throw new Error('Inventory variant not found');
+        }
+        variant = {
+          ...existing,
+          sku: input.sku?.trim() || existing.sku,
+          name,
+          category,
+          productType,
+          workDesign,
+          color,
+          unit,
+          purchaseCostPaise,
+          defaultSellingPricePaise,
+          lowStockThreshold,
+          photoId: input.photoId !== undefined ? input.photoId : existing.photoId,
+          photoDataUrl:
+            input.photoDataUrl !== undefined ? input.photoDataUrl : existing.photoDataUrl,
+          notes: input.notes !== undefined ? input.notes.trim() : existing.notes,
+          isActive: input.isActive !== undefined ? input.isActive : existing.isActive,
+          isPinned: input.isPinned !== undefined ? input.isPinned : existing.isPinned,
+          updatedAt: now
+        };
+        await database.inventoryVariants.put(variant);
+        const syncedTotal = await recalculateVariantTotalInTx(variant.id, database);
+        variant.totalQuantity = syncedTotal;
+      } else {
+        const variantId = generateId('var');
+        const sku =
+          input.sku?.trim() ||
+          `${buildSkuFromHierarchy(category, productType, workDesign, color)}-${Math.floor(
+            100 + Math.random() * 900
+          )}`;
+        const initQty = roundStockQty(Number(input.initialBundleQuantity || 0));
+        if (initQty < 0) {
+          throw new Error('Initial stock quantity cannot be negative');
+        }
+
+        variant = {
+          id: variantId,
+          sku,
+          name,
+          category,
+          productType,
+          workDesign,
+          color,
+          unit,
+          purchaseCostPaise,
+          defaultSellingPricePaise,
+          lowStockThreshold,
+          totalQuantity: initQty,
+          photoId: input.photoId,
+          photoDataUrl: input.photoDataUrl,
+          notes: input.notes?.trim() || '',
+          isActive: input.isActive !== undefined ? input.isActive : true,
+          isPinned: Boolean(input.isPinned),
+          createdAt: now,
+          updatedAt: now
+        };
+        await database.inventoryVariants.put(variant);
+
+        if (initQty > 0) {
+          const receivedDate = input.initialBundleDate || getTodayIsoDate();
+          const bundleCode =
+            input.initialBundleCode?.trim() ||
+            `BND-${sku.split('-').slice(0, 2).join('')}-01`;
+          initialBundle = {
+            id: generateId('bnd'),
+            variantId: variant.id,
+            bundleCode,
+            initialQuantity: initQty,
+            remainingQuantity: initQty,
+            unit,
+            purchaseCostPaise,
+            receivedDate,
+            supplier: input.initialBundleSupplier?.trim() || undefined,
+            photoDataUrl: input.initialBundlePhotoDataUrl,
+            notes: 'Initial opening bundle',
+            createdAt: now,
+            updatedAt: now
+          };
+          await database.inventoryBundles.put(initialBundle);
+
+          const movement: InventoryMovement = {
+            id: generateId('mov'),
+            variantId: variant.id,
+            bundleId: initialBundle.id,
+            bundleCode: initialBundle.bundleCode,
+            type: 'receive',
+            quantityDelta: initQty,
+            balanceAfter: initQty,
+            unit,
+            reason: `Opening stock received (${bundleCode})`,
+            date: receivedDate,
+            createdAt: now
+          };
+          await database.inventoryMovements.put(movement);
+        }
+
+        // Automatically create or link a CatalogueItem so it appears in New Bill & Catalogue
+        if (input.createLinkedCatalogueItem !== false) {
+          const catItem: CatalogueItem = {
+            id: generateId('cat-prd'),
+            name: variant.name,
+            category: 'product',
+            defaultPricePaise: defaultSellingPricePaise,
+            costPricePaise: purchaseCostPaise,
+            unit,
+            description: `${category} → ${productType} → ${workDesign} → ${color}`,
+            isActive: true,
+            inventoryVariantId: variant.id,
+            productType,
+            workDesign,
+            color,
+            isPinned: Boolean(input.isPinned),
+            photoDataUrl: input.photoDataUrl,
+            createdAt: now,
+            updatedAt: now
+          };
+          await database.catalogue.put(catItem);
+        }
+      }
+
+      return { variant, initialBundle };
+    }
+  );
+}
+
+export interface ReceiveInventoryBundleInput {
+  variantId: string;
+  quantity: number;
+  receivedDate?: string;
+  purchaseCostPaise?: number;
+  bundleCode?: string;
+  supplier?: string;
+  photoId?: string;
+  photoDataUrl?: string;
+  notes?: string;
+}
+
+export async function receiveInventoryBundle(
+  input: ReceiveInventoryBundleInput,
+  database: ALIFBillingDatabase = defaultDb
+): Promise<{ variant: InventoryVariant; bundle: InventoryBundle; movement: InventoryMovement }> {
+  await database.ensureSeeded();
+  const qty = roundStockQty(Number(input.quantity));
+  if (!Number.isFinite(qty) || qty <= 0) {
+    throw new Error('Received bundle quantity must be greater than zero');
+  }
+
+  return await database.transaction(
+    'rw',
+    database.inventoryVariants,
+    database.inventoryBundles,
+    database.inventoryMovements,
+    async () => {
+      const variant = await database.inventoryVariants.get(input.variantId);
+      if (!variant) {
+        throw new Error('Inventory variant not found');
+      }
+
+      const existingBundles = await database.inventoryBundles
+        .where('variantId')
+        .equals(variant.id)
+        .toArray();
+      const nextNum = String(existingBundles.length + 1).padStart(2, '0');
+      const bundleCode =
+        input.bundleCode?.trim() ||
+        `BND-${variant.color.slice(0, 3).toUpperCase()}-${nextNum}`;
+      const receivedDate = input.receivedDate || getTodayIsoDate();
+      const purchaseCostPaise =
+        input.purchaseCostPaise !== undefined
+          ? Math.max(0, Math.round(Number(input.purchaseCostPaise)))
+          : variant.purchaseCostPaise;
+      const now = new Date().toISOString();
+
+      const bundle: InventoryBundle = {
+        id: generateId('bnd'),
+        variantId: variant.id,
+        bundleCode,
+        initialQuantity: qty,
+        remainingQuantity: qty,
+        unit: variant.unit,
+        purchaseCostPaise,
+        receivedDate,
+        supplier: input.supplier?.trim() || undefined,
+        photoId: input.photoId,
+        photoDataUrl: input.photoDataUrl,
+        notes: input.notes?.trim() || undefined,
+        createdAt: now,
+        updatedAt: now
+      };
+      await database.inventoryBundles.put(bundle);
+
+      const newTotal = await recalculateVariantTotalInTx(variant.id, database);
+      const updatedVariant: InventoryVariant = {
+        ...variant,
+        totalQuantity: newTotal,
+        purchaseCostPaise,
+        updatedAt: now
+      };
+      await database.inventoryVariants.put(updatedVariant);
+
+      const movement: InventoryMovement = {
+        id: generateId('mov'),
+        variantId: variant.id,
+        bundleId: bundle.id,
+        bundleCode: bundle.bundleCode,
+        type: 'receive',
+        quantityDelta: qty,
+        balanceAfter: newTotal,
+        unit: variant.unit,
+        reason: input.notes?.trim()
+          ? `Received ${bundleCode}: ${input.notes.trim()}`
+          : `Received bundle ${bundleCode}`,
+        date: receivedDate,
+        createdAt: now
+      };
+      await database.inventoryMovements.put(movement);
+
+      return { variant: updatedVariant, bundle, movement };
+    }
+  );
+}
+
+export interface AdjustInventoryStockInput {
+  variantId: string;
+  bundleId?: string;
+  quantityDelta: number; // Positive to add, negative to deduct (e.g. damage, shrinkage, measurement correction)
+  reason: string;
+  date?: string;
+}
+
+export async function adjustInventoryStock(
+  input: AdjustInventoryStockInput,
+  database: ALIFBillingDatabase = defaultDb
+): Promise<{ variant: InventoryVariant; movement: InventoryMovement }> {
+  await database.ensureSeeded();
+  const delta = roundStockQty(Number(input.quantityDelta));
+  if (!Number.isFinite(delta) || delta === 0) {
+    throw new Error('Adjustment quantity must be a non-zero number');
+  }
+  const cleanReason = String(input.reason || '').trim();
+  if (!cleanReason) {
+    throw new Error('A reason is required for manual stock adjustments');
+  }
+
+  return await database.transaction(
+    'rw',
+    database.inventoryVariants,
+    database.inventoryBundles,
+    database.inventoryMovements,
+    async () => {
+      const variant = await database.inventoryVariants.get(input.variantId);
+      if (!variant) {
+        throw new Error('Inventory variant not found');
+      }
+
+      const bundles = await listInventoryBundlesInTx(variant.id, database);
+      const now = new Date().toISOString();
+      const date = input.date || getTodayIsoDate();
+      let affectedBundleCode: string | undefined;
+      let affectedBundleId: string | undefined;
+
+      if (delta < 0) {
+        const neededMilli = Math.abs(toQtyUnits(delta));
+        const currentTotalMilli = toQtyUnits(variant.totalQuantity);
+        if (neededMilli > currentTotalMilli) {
+          throw new Error(
+            `Cannot reduce stock by ${formatStockQuantity(
+              Math.abs(delta),
+              variant.unit
+            )}: only ${formatStockQuantity(variant.totalQuantity, variant.unit)} available.`
+          );
+        }
+
+        if (input.bundleId) {
+          const targetBundle = bundles.find((b) => b.id === input.bundleId);
+          if (!targetBundle) {
+            throw new Error('Selected bundle/roll not found');
+          }
+          const remMilli = toQtyUnits(targetBundle.remainingQuantity);
+          if (neededMilli > remMilli) {
+            throw new Error(
+              `Bundle ${targetBundle.bundleCode} only has ${formatStockQuantity(
+                targetBundle.remainingQuantity,
+                variant.unit
+              )} remaining.`
+            );
+          }
+          await database.inventoryBundles.put({
+            ...targetBundle,
+            remainingQuantity: fromQtyUnits(remMilli - neededMilli),
+            updatedAt: now
+          });
+          affectedBundleId = targetBundle.id;
+          affectedBundleCode = targetBundle.bundleCode;
+        } else {
+          // Deduct in FIFO order across bundles
+          let remainingToDeduct = neededMilli;
+          for (const b of bundles) {
+            if (remainingToDeduct <= 0) break;
+            const avail = toQtyUnits(b.remainingQuantity);
+            if (avail <= 0) continue;
+            const take = Math.min(avail, remainingToDeduct);
+            await database.inventoryBundles.put({
+              ...b,
+              remainingQuantity: fromQtyUnits(avail - take),
+              updatedAt: now
+            });
+            remainingToDeduct -= take;
+            if (!affectedBundleCode) {
+              affectedBundleId = b.id;
+              affectedBundleCode = b.bundleCode;
+            }
+          }
+        }
+      } else {
+        // Positive adjustment
+        if (input.bundleId) {
+          const targetBundle = bundles.find((b) => b.id === input.bundleId);
+          if (!targetBundle) {
+            throw new Error('Selected bundle/roll not found');
+          }
+          const newRem = fromQtyUnits(toQtyUnits(targetBundle.remainingQuantity) + toQtyUnits(delta));
+          const newInit = Math.max(targetBundle.initialQuantity, newRem);
+          await database.inventoryBundles.put({
+            ...targetBundle,
+            initialQuantity: newInit,
+            remainingQuantity: newRem,
+            updatedAt: now
+          });
+          affectedBundleId = targetBundle.id;
+          affectedBundleCode = targetBundle.bundleCode;
+        } else if (bundles.length > 0) {
+          // Add to newest bundle
+          const newest = bundles[bundles.length - 1];
+          const newRem = fromQtyUnits(toQtyUnits(newest.remainingQuantity) + toQtyUnits(delta));
+          const newInit = Math.max(newest.initialQuantity, newRem);
+          await database.inventoryBundles.put({
+            ...newest,
+            initialQuantity: newInit,
+            remainingQuantity: newRem,
+            updatedAt: now
+          });
+          affectedBundleId = newest.id;
+          affectedBundleCode = newest.bundleCode;
+        } else {
+          const adjBundle: InventoryBundle = {
+            id: generateId('bnd'),
+            variantId: variant.id,
+            bundleCode: `BND-ADJ-01`,
+            initialQuantity: delta,
+            remainingQuantity: delta,
+            unit: variant.unit,
+            purchaseCostPaise: variant.purchaseCostPaise,
+            receivedDate: date,
+            notes: cleanReason,
+            createdAt: now,
+            updatedAt: now
+          };
+          await database.inventoryBundles.put(adjBundle);
+          affectedBundleId = adjBundle.id;
+          affectedBundleCode = adjBundle.bundleCode;
+        }
+      }
+
+      const newTotal = await recalculateVariantTotalInTx(variant.id, database);
+      const updatedVariant = (await database.inventoryVariants.get(variant.id))!;
+
+      const movement: InventoryMovement = {
+        id: generateId('mov'),
+        variantId: variant.id,
+        bundleId: affectedBundleId,
+        bundleCode: affectedBundleCode,
+        type: 'adjustment',
+        quantityDelta: delta,
+        balanceAfter: newTotal,
+        unit: variant.unit,
+        reason: cleanReason,
+        date,
+        createdAt: now
+      };
+      await database.inventoryMovements.put(movement);
+
+      return { variant: updatedVariant, movement };
+    }
+  );
+}
+
+async function listInventoryBundlesInTx(
+  variantId: string,
+  database: ALIFBillingDatabase
+): Promise<InventoryBundle[]> {
+  const bundles = await database.inventoryBundles.where('variantId').equals(variantId).toArray();
+  // FIFO order: oldest receivedDate first, then oldest createdAt first
+  return bundles.sort((a, b) => {
+    if (a.receivedDate !== b.receivedDate) {
+      return a.receivedDate.localeCompare(b.receivedDate);
+    }
+    return a.createdAt.localeCompare(b.createdAt);
+  });
+}
+
+export async function listInventoryBundles(
+  variantId?: string,
+  database: ALIFBillingDatabase = defaultDb
+): Promise<InventoryBundle[]> {
+  await database.ensureSeeded();
+  if (!canUseInventoryStores(database)) return [];
+  const bundles = variantId
+    ? await database.inventoryBundles.where('variantId').equals(variantId).toArray()
+    : await database.inventoryBundles.toArray();
+  return bundles.sort((a, b) => {
+    if (a.receivedDate !== b.receivedDate) {
+      return a.receivedDate.localeCompare(b.receivedDate);
+    }
+    return a.createdAt.localeCompare(b.createdAt);
+  });
+}
+
+export async function listInventoryMovements(
+  variantId?: string,
+  database: ALIFBillingDatabase = defaultDb
+): Promise<InventoryMovement[]> {
+  await database.ensureSeeded();
+  if (!canUseInventoryStores(database)) return [];
+  const movements = variantId
+    ? await database.inventoryMovements.where('variantId').equals(variantId).toArray()
+    : await database.inventoryMovements.toArray();
+  return movements.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export interface InventoryFilterOptions {
+  category?: string;
+  productType?: string;
+  workDesign?: string;
+  color?: string;
+  stockStatus?: StockStatus | 'All';
+  search?: string;
+  activeOnly?: boolean;
+}
+
+export async function listInventoryVariants(
+  filters: InventoryFilterOptions = {},
+  database: ALIFBillingDatabase = defaultDb
+): Promise<InventoryVariant[]> {
+  await database.ensureSeeded();
+  if (!canUseInventoryStores(database)) return [];
+  let variants = await database.inventoryVariants.toArray();
+
+  if (filters.activeOnly) {
+    variants = variants.filter((v) => v.isActive);
+  }
+  if (filters.category && filters.category !== 'All') {
+    variants = variants.filter((v) => v.category === filters.category);
+  }
+  if (filters.productType && filters.productType !== 'All') {
+    variants = variants.filter((v) => v.productType === filters.productType);
+  }
+  if (filters.workDesign && filters.workDesign !== 'All') {
+    variants = variants.filter((v) => v.workDesign === filters.workDesign);
+  }
+  if (filters.color && filters.color !== 'All') {
+    variants = variants.filter((v) => v.color === filters.color);
+  }
+  if (filters.stockStatus && filters.stockStatus !== 'All') {
+    variants = variants.filter((v) => getVariantStockStatus(v) === filters.stockStatus);
+  }
+
+  if (filters.search && filters.search.trim()) {
+    const ranked = searchInventoryVariants(variants, filters.search);
+    return ranked.map((r) => r.item);
+  }
+
+  return variants.sort((a, b) => {
+    if (a.category !== b.category) return a.category.localeCompare(b.category);
+    if (a.productType !== b.productType) return a.productType.localeCompare(b.productType);
+    if (a.workDesign !== b.workDesign) return a.workDesign.localeCompare(b.workDesign);
+    return a.color.localeCompare(b.color);
+  });
+}
+
+/**
+ * Internal FIFO deduction helper used inside atomic invoice transactions.
+ * Deducts from oldest eligible bundle first, tracks exact allocations per bundle,
+ * and throws a descriptive error if stock is insufficient.
+ */
+async function deductLineItemsFIFOInTx(
+  items: InvoiceLineItem[],
+  invoiceId: string,
+  invoiceNumber: string,
+  invoiceDate: string,
+  movementType: 'sale' | 'edit_reconcile',
+  database: ALIFBillingDatabase
+): Promise<InvoiceLineItem[]> {
+  if (!canUseInventoryStores(database)) {
+    return items;
+  }
+
+  const now = new Date().toISOString();
+  const processed: InvoiceLineItem[] = [];
+
+  for (const item of items) {
+    // Services and explicit non-stock items NEVER reduce inventory
+    if (item.category === 'service' || item.isNonStock) {
+      processed.push({
+        ...item,
+        inventoryVariantId: null,
+        stockAllocations: undefined
+      });
+      continue;
+    }
+
+    let resolvedVariantId = item.inventoryVariantId ?? null;
+    if (!resolvedVariantId && item.catalogueItemId) {
+      const catItem = await database.catalogue.get(item.catalogueItemId);
+      if (catItem?.inventoryVariantId) {
+        resolvedVariantId = catItem.inventoryVariantId;
+      }
+    }
+
+    if (!resolvedVariantId) {
+      processed.push({
+        ...item,
+        inventoryVariantId: null,
+        stockAllocations: undefined
+      });
+      continue;
+    }
+
+    const variant = await database.inventoryVariants.get(resolvedVariantId);
+    if (!variant) {
+      throw new Error(`Linked inventory variant for "${item.name}" was not found.`);
+    }
+
+    const requiredMilli = toQtyUnits(item.quantity);
+    if (requiredMilli <= 0) {
+      throw new Error(`Item "${item.name}" must have a quantity greater than zero.`);
+    }
+
+    const bundles = await listInventoryBundlesInTx(variant.id, database);
+    let availableMilli = 0;
+    for (const b of bundles) {
+      if (b.remainingQuantity > 0) {
+        availableMilli += toQtyUnits(b.remainingQuantity);
+      }
+    }
+
+    if (requiredMilli > availableMilli) {
+      throw new Error(
+        `Insufficient stock for "${variant.name}": required ${formatStockQuantity(
+          fromQtyUnits(requiredMilli),
+          variant.unit
+        )}, available ${formatStockQuantity(fromQtyUnits(availableMilli), variant.unit)}.`
+      );
+    }
+
+    let remainingNeededMilli = requiredMilli;
+    const allocations: StockAllocation[] = [];
+
+    for (const bundle of bundles) {
+      if (remainingNeededMilli <= 0) break;
+      const bundleAvailMilli = toQtyUnits(bundle.remainingQuantity);
+      if (bundleAvailMilli <= 0) continue;
+
+      const deductMilli = Math.min(bundleAvailMilli, remainingNeededMilli);
+      const newBundleRem = fromQtyUnits(bundleAvailMilli - deductMilli);
+      const deductedQty = fromQtyUnits(deductMilli);
+
+      await database.inventoryBundles.put({
+        ...bundle,
+        remainingQuantity: newBundleRem,
+        updatedAt: now
+      });
+
+      allocations.push({
+        bundleId: bundle.id,
+        bundleCode: bundle.bundleCode,
+        quantityDeducted: deductedQty,
+        purchaseCostPaise: bundle.purchaseCostPaise
+      });
+
+      remainingNeededMilli -= deductMilli;
+    }
+
+    const newVariantTotal = await recalculateVariantTotalInTx(variant.id, database);
+
+    for (const alloc of allocations) {
+      const mov: InventoryMovement = {
+        id: generateId('mov'),
+        variantId: variant.id,
+        bundleId: alloc.bundleId,
+        bundleCode: alloc.bundleCode,
+        type: movementType,
+        quantityDelta: -alloc.quantityDeducted,
+        balanceAfter: newVariantTotal,
+        unit: variant.unit,
+        reason:
+          movementType === 'sale'
+            ? `Sold on Bill ${invoiceNumber} (${alloc.bundleCode})`
+            : `Allocated on edited Bill ${invoiceNumber} (${alloc.bundleCode})`,
+        invoiceId,
+        invoiceNumber,
+        lineItemId: item.id,
+        date: invoiceDate,
+        createdAt: now
+      };
+      await database.inventoryMovements.put(mov);
+    }
+
+    processed.push({
+      ...item,
+      inventoryVariantId: variant.id,
+      stockAllocations: allocations
+    });
+  }
+
+  return processed;
+}
+
+/**
+ * Restores previously allocated bundle quantities back to their respective bundles.
+ */
+async function restoreLineItemsStockInTx(
+  items: InvoiceLineItem[],
+  invoiceId: string,
+  invoiceNumber: string,
+  movementType: 'cancel_restore' | 'edit_reconcile',
+  reasonPrefix: string,
+  database: ALIFBillingDatabase
+): Promise<void> {
+  if (!canUseInventoryStores(database)) return;
+  const now = new Date().toISOString();
+  const today = getTodayIsoDate();
+
+  for (const item of items) {
+    if (!item.inventoryVariantId || !item.stockAllocations || item.stockAllocations.length === 0) {
+      continue;
+    }
+
+    const variant = await database.inventoryVariants.get(item.inventoryVariantId);
+    for (const alloc of item.stockAllocations) {
+      const restoreMilli = toQtyUnits(alloc.quantityDeducted);
+      if (restoreMilli <= 0) continue;
+
+      const bundle = await database.inventoryBundles.get(alloc.bundleId);
+      if (bundle) {
+        const newRem = fromQtyUnits(toQtyUnits(bundle.remainingQuantity) + restoreMilli);
+        await database.inventoryBundles.put({
+          ...bundle,
+          remainingQuantity: newRem,
+          updatedAt: now
+        });
+      } else if (variant) {
+        // Recreate bundle if it was somehow missing
+        await database.inventoryBundles.put({
+          id: alloc.bundleId,
+          variantId: variant.id,
+          bundleCode: alloc.bundleCode || 'BND-RESTORED',
+          initialQuantity: fromQtyUnits(restoreMilli),
+          remainingQuantity: fromQtyUnits(restoreMilli),
+          unit: variant.unit,
+          purchaseCostPaise: alloc.purchaseCostPaise ?? variant.purchaseCostPaise,
+          receivedDate: today,
+          notes: `Restored from ${invoiceNumber}`,
+          createdAt: now,
+          updatedAt: now
+        });
+      }
+
+      const newTotal = await recalculateVariantTotalInTx(item.inventoryVariantId, database);
+
+      if (variant) {
+        const mov: InventoryMovement = {
+          id: generateId('mov'),
+          variantId: variant.id,
+          bundleId: alloc.bundleId,
+          bundleCode: alloc.bundleCode,
+          type: movementType,
+          quantityDelta: fromQtyUnits(restoreMilli),
+          balanceAfter: newTotal,
+          unit: variant.unit,
+          reason: `${reasonPrefix} (${alloc.bundleCode})`,
+          invoiceId,
+          invoiceNumber,
+          lineItemId: item.id,
+          date: today,
+          createdAt: now
+        };
+        await database.inventoryMovements.put(mov);
+      }
+    }
+  }
+}
+
+// ============================================================================
+// 5. INVOICE CREATION, NUMBERING & DUPLICATE PREVENTION
 // ============================================================================
 
 export async function previewNextInvoiceNumber(
@@ -339,6 +1350,8 @@ export async function previewNextInvoiceNumber(
 export interface CreateInvoiceLineInput {
   id?: string;
   catalogueItemId?: string | null;
+  inventoryVariantId?: string | null;
+  isNonStock?: boolean;
   name: string;
   category: CatalogueCategory;
   quantity: number;
@@ -378,14 +1391,16 @@ export async function createInvoice(
   activeSubmissionLocks.add(lockKey);
 
   try {
-    // Check idempotency key in DB to prevent duplicate invoice creation
+    // Check idempotency key in DB to prevent duplicate invoice creation & duplicate stock deduction
     if (input.idempotencyKey) {
       const existingByKey = await database.invoices
         .where('idempotencyKey')
         .equals(input.idempotencyKey)
         .first();
       if (existingByKey) {
-        throw new Error(`Duplicate submission prevented: Invoice ${existingByKey.invoiceNumber} already saved.`);
+        throw new Error(
+          `Duplicate submission prevented: Invoice ${existingByKey.invoiceNumber} already saved.`
+        );
       }
     }
 
@@ -407,12 +1422,15 @@ export async function createInvoice(
       if (!itemName) {
         throw new Error(`Line item #${idx + 1} requires a name`);
       }
-      const qty = Number(raw.quantity);
+      const qty = roundStockQty(Number(raw.quantity));
       const unitPaise = Math.round(Number(raw.unitPricePaise));
       const lineTotalPaise = calculateLineTotalPaise(qty, unitPaise);
       return {
         id: raw.id || generateId(`line-${idx + 1}`),
         catalogueItemId: raw.catalogueItemId ?? null,
+        inventoryVariantId:
+          raw.category === 'service' || raw.isNonStock ? null : raw.inventoryVariantId ?? undefined,
+        isNonStock: Boolean(raw.isNonStock),
         name: itemName,
         category: raw.category || 'service',
         quantity: qty,
@@ -434,13 +1452,27 @@ export async function createInvoice(
 
     const settings = await getShopSettings(database);
 
-    return await database.transaction(
-      'rw',
+    const txTables: any[] = [
       database.settings,
       database.customers,
+      database.catalogue,
       database.invoices,
-      database.payments,
-      database.itemPhotos,
+      database.payments
+    ];
+    if (canUseItemPhotosStore(database)) {
+      txTables.push(database.itemPhotos);
+    }
+    if (canUseInventoryStores(database)) {
+      txTables.push(
+        database.inventoryVariants,
+        database.inventoryBundles,
+        database.inventoryMovements
+      );
+    }
+
+    return await database.transaction(
+      'rw',
+      ...(txTables as [any, ...any[]]),
       async () => {
         const totals = calculateInvoiceTotals({
           items: normalizedItems,
@@ -456,6 +1488,30 @@ export async function createInvoice(
         }
 
         const now = new Date().toISOString();
+
+        // Generate guaranteed unique invoice number
+        const year = parseInt(invoiceDate.slice(0, 4), 10) || new Date().getFullYear();
+        const allInvoices: Invoice[] = await database.invoices.toArray();
+        const existingNumbers = new Set(allInvoices.map((i) => i.invoiceNumber));
+        let seq = Math.max(1, settings.nextInvoiceSequence || 1);
+        let invoiceNumber = formatInvoiceNumber(settings.invoicePrefix, year, seq);
+        while (existingNumbers.has(invoiceNumber)) {
+          seq++;
+          invoiceNumber = formatInvoiceNumber(settings.invoicePrefix, year, seq);
+        }
+
+        const invoiceId = generateId('inv');
+
+        // Perform FIFO stock deduction ONLY inside this atomic save transaction.
+        // If any stock-linked item has insufficient stock, this throws and rolls back the entire transaction!
+        const itemsWithAllocations = await deductLineItemsFIFOInTx(
+          normalizedItems,
+          invoiceId,
+          invoiceNumber,
+          invoiceDate,
+          'sale',
+          database
+        );
 
         // Resolve or create customer
         let customer: Customer | undefined;
@@ -492,17 +1548,6 @@ export async function createInvoice(
           await database.customers.put(customer);
         }
 
-        // Generate guaranteed unique invoice number
-        const year = parseInt(invoiceDate.slice(0, 4), 10) || new Date().getFullYear();
-        const allInvoices: Invoice[] = await database.invoices.toArray();
-        const existingNumbers = new Set(allInvoices.map((i) => i.invoiceNumber));
-        let seq = Math.max(1, settings.nextInvoiceSequence || 1);
-        let invoiceNumber = formatInvoiceNumber(settings.invoicePrefix, year, seq);
-        while (existingNumbers.has(invoiceNumber)) {
-          seq++;
-          invoiceNumber = formatInvoiceNumber(settings.invoicePrefix, year, seq);
-        }
-
         // Update sequence counter
         await database.settings.put({
           ...settings,
@@ -510,7 +1555,6 @@ export async function createInvoice(
           updatedAt: now
         });
 
-        const invoiceId = generateId('inv');
         const createdPayments: PaymentRecord[] = [];
 
         if (advancePaise > 0) {
@@ -541,7 +1585,7 @@ export async function createInvoice(
           customerPhone: customer.phone,
           invoiceDate,
           collectionDate: input.collectionDate || undefined,
-          items: normalizedItems,
+          items: itemsWithAllocations,
           subtotalPaise: totals.subtotalPaise,
           discountType,
           discountValue,
@@ -556,23 +1600,39 @@ export async function createInvoice(
           balancePaise: ledger.balancePaise,
           status: ledger.status,
           notes: String(input.notes || '').trim(),
+          stockRestoredOnCancel: false,
           idempotencyKey: input.idempotencyKey,
           createdAt: now,
           updatedAt: now
         };
 
         await database.invoices.put(invoice);
-        if (database.itemPhotos) {
-          for (const item of normalizedItems) {
-            if (item.photoId) {
-              const existingPhoto = await database.itemPhotos.get(item.photoId);
-              if (existingPhoto) {
-                await database.itemPhotos.put({
-                  ...existingPhoto,
-                  invoiceId,
-                  lineItemId: item.id
-                });
+        if (canUseItemPhotosStore(database)) {
+          try {
+            for (const item of itemsWithAllocations) {
+              if (item.photoId) {
+                const existingPhoto = await database.itemPhotos.get(item.photoId);
+                if (existingPhoto) {
+                  await database.itemPhotos.put({
+                    ...existingPhoto,
+                    invoiceId,
+                    lineItemId: item.id
+                  });
+                }
               }
+            }
+          } catch (_photoErr) {
+            // Safeguard against missing objectStore in legacy connections
+          }
+        } else {
+          for (const item of itemsWithAllocations) {
+            if (item.photoId && memoryPhotoFallback.has(item.photoId)) {
+              const existingPhoto = memoryPhotoFallback.get(item.photoId)!;
+              memoryPhotoFallback.set(item.photoId, {
+                ...existingPhoto,
+                invoiceId,
+                lineItemId: item.id
+              });
             }
           }
         }
@@ -585,7 +1645,7 @@ export async function createInvoice(
 }
 
 // ============================================================================
-// 5. PAYMENTS, REFUNDS, CORRECTIONS, CANCELLATIONS & REOPENING
+// 6. PAYMENTS, REFUNDS, CORRECTIONS, CANCELLATIONS & REOPENING
 // ============================================================================
 
 export interface RecordPaymentInput {
@@ -597,6 +1657,10 @@ export interface RecordPaymentInput {
   note?: string;
 }
 
+/**
+ * Records an advance, balance payment, refund, or correction.
+ * Strictly financial ledger operation — never deducts or alters physical stock.
+ */
 export async function recordInvoicePayment(
   input: RecordPaymentInput,
   database: ALIFBillingDatabase = defaultDb
@@ -680,6 +1744,10 @@ export async function recordInvoicePayment(
   });
 }
 
+/**
+ * Cancels an invoice and restores any deducted physical stock back to its original bundles
+ * EXACTLY ONCE. Calling cancelInvoice again on an already-cancelled invoice never double-restores stock.
+ */
 export async function cancelInvoice(
   invoiceId: string,
   reason: string,
@@ -691,11 +1759,36 @@ export async function cancelInvoice(
     throw new Error('Cancellation reason is required');
   }
 
-  return await database.transaction('rw', database.invoices, database.payments, async () => {
+  const cancelTables: any[] = [database.invoices, database.payments];
+  if (canUseInventoryStores(database)) {
+    cancelTables.push(
+      database.inventoryVariants,
+      database.inventoryBundles,
+      database.inventoryMovements
+    );
+  }
+
+  return await database.transaction('rw', ...(cancelTables as [any, ...any[]]), async () => {
     const invoice: Invoice | undefined = await database.invoices.get(invoiceId);
     if (!invoice) {
       throw new Error('Invoice not found');
     }
+
+    // Restore stock ONLY if not already cancelled & restored
+    const shouldRestoreStock =
+      invoice.status !== 'Cancelled' && !invoice.stockRestoredOnCancel;
+
+    if (shouldRestoreStock) {
+      await restoreLineItemsStockInTx(
+        invoice.items,
+        invoice.id,
+        invoice.invoiceNumber,
+        'cancel_restore',
+        `Restored on cancellation of Bill ${invoice.invoiceNumber}: ${cleanReason}`,
+        database
+      );
+    }
+
     const existingPayments: PaymentRecord[] = await database.payments
       .where('invoiceId')
       .equals(invoiceId)
@@ -711,6 +1804,7 @@ export async function cancelInvoice(
       status: 'Cancelled',
       cancelReason: cleanReason,
       cancelledAt: now,
+      stockRestoredOnCancel: true,
       updatedAt: now
     };
     await database.invoices.put(updated);
@@ -727,45 +1821,101 @@ export interface ReopenOrEditInvoiceInput {
   notes?: string;
 }
 
+/**
+ * Reopens a cancelled invoice or updates an existing invoice's line items,
+ * reconciling physical stock atomically (restoring previous allocations if still held,
+ * then deducting new FIFO allocations for the updated items).
+ */
 export async function reopenAndUpdateInvoice(
   input: ReopenOrEditInvoiceInput,
   database: ALIFBillingDatabase = defaultDb
 ): Promise<Invoice> {
   await database.ensureSeeded();
-  return await database.transaction('rw', database.invoices, database.payments, database.itemPhotos, async () => {
+  const reopenTables: any[] = [
+    database.invoices,
+    database.payments,
+    database.catalogue
+  ];
+  if (canUseItemPhotosStore(database)) {
+    reopenTables.push(database.itemPhotos);
+  }
+  if (canUseInventoryStores(database)) {
+    reopenTables.push(
+      database.inventoryVariants,
+      database.inventoryBundles,
+      database.inventoryMovements
+    );
+  }
+
+  return await database.transaction('rw', ...(reopenTables as [any, ...any[]]), async () => {
     const invoice: Invoice | undefined = await database.invoices.get(input.invoiceId);
     if (!invoice) {
       throw new Error('Invoice not found');
     }
 
-    const updatedItems: InvoiceLineItem[] = input.items
+    const rawTargetItems: InvoiceLineItem[] = input.items
       ? input.items.map((raw, idx) => {
-          const lineTotalPaise = calculateLineTotalPaise(raw.quantity, raw.unitPricePaise);
+          const prevMatch = invoice.items.find((p) => p.id === raw.id);
+          const qty = roundStockQty(Number(raw.quantity));
+          const unitPricePaise = Math.round(Number(raw.unitPricePaise));
+          const lineTotalPaise = calculateLineTotalPaise(qty, unitPricePaise);
           return {
             id: raw.id || generateId(`line-${idx + 1}`),
             catalogueItemId: raw.catalogueItemId ?? null,
+            inventoryVariantId:
+              raw.category === 'service' || raw.isNonStock
+                ? null
+                : raw.inventoryVariantId !== undefined
+                ? raw.inventoryVariantId
+                : prevMatch?.inventoryVariantId ?? undefined,
+            isNonStock:
+              raw.isNonStock !== undefined ? raw.isNonStock : prevMatch?.isNonStock,
             name: String(raw.name || '').trim(),
             category: raw.category || 'service',
-            quantity: Number(raw.quantity),
+            quantity: qty,
             unit: String(raw.unit || 'pc').trim() || 'pc',
-            unitPricePaise: Math.round(Number(raw.unitPricePaise)),
-            costPricePaise: raw.costPricePaise !== undefined ? Math.round(raw.costPricePaise) : undefined,
+            unitPricePaise,
+            costPricePaise:
+              raw.costPricePaise !== undefined ? Math.round(raw.costPricePaise) : undefined,
             lineTotalPaise,
             notes: raw.notes ? String(raw.notes).trim() : undefined,
             photoId: raw.photoId || undefined
           };
         })
-      : invoice.items;
+      : invoice.items.map((it) => ({ ...it }));
 
-    if (updatedItems.length === 0) {
+    if (rawTargetItems.length === 0) {
       throw new Error('Invoice must contain at least one item');
     }
+
+    // Step 1: If the invoice had active stock deductions (was not cancelled or not yet restored),
+    // return those allocations to their bundles first before re-allocating.
+    if (invoice.status !== 'Cancelled' && !invoice.stockRestoredOnCancel) {
+      await restoreLineItemsStockInTx(
+        invoice.items,
+        invoice.id,
+        invoice.invoiceNumber,
+        'edit_reconcile',
+        `Reconciled previous allocation for edited Bill ${invoice.invoiceNumber}`,
+        database
+      );
+    }
+
+    // Step 2: Deduct updated line items in FIFO order
+    const reconciledItems = await deductLineItemsFIFOInTx(
+      rawTargetItems,
+      invoice.id,
+      invoice.invoiceNumber,
+      invoice.invoiceDate,
+      'edit_reconcile',
+      database
+    );
 
     const discountType = input.discountType ?? invoice.discountType;
     const discountValue = input.discountValue ?? invoice.discountValue;
 
     const totals = calculateInvoiceTotals({
-      items: updatedItems,
+      items: reconciledItems,
       discountType,
       discountValue,
       taxEnabled: invoice.taxEnabled,
@@ -781,7 +1931,7 @@ export async function reopenAndUpdateInvoice(
 
     const updated: Invoice = {
       ...invoice,
-      items: updatedItems,
+      items: reconciledItems,
       subtotalPaise: totals.subtotalPaise,
       discountType,
       discountValue,
@@ -792,24 +1942,28 @@ export async function reopenAndUpdateInvoice(
       paidPaise: ledger.netPaidPaise,
       balancePaise: ledger.balancePaise,
       status: ledger.status,
-      collectionDate: input.collectionDate !== undefined ? input.collectionDate || undefined : invoice.collectionDate,
+      collectionDate:
+        input.collectionDate !== undefined
+          ? input.collectionDate || undefined
+          : invoice.collectionDate,
       notes: input.notes !== undefined ? input.notes.trim() : invoice.notes,
       cancelReason: undefined,
       cancelledAt: undefined,
+      stockRestoredOnCancel: false,
       updatedAt: now
     };
 
     await database.invoices.put(updated);
-    if (database.itemPhotos) {
+    if (canUseItemPhotosStore(database)) {
       const keptPhotoIds = new Set(
-        updatedItems.map((it) => it.photoId).filter((id): id is string => Boolean(id))
+        reconciledItems.map((it) => it.photoId).filter((id): id is string => Boolean(id))
       );
       for (const prevItem of invoice.items) {
         if (prevItem.photoId && !keptPhotoIds.has(prevItem.photoId)) {
           await database.itemPhotos.delete(prevItem.photoId);
         }
       }
-      for (const item of updatedItems) {
+      for (const item of reconciledItems) {
         if (item.photoId) {
           const existingPhoto = await database.itemPhotos.get(item.photoId);
           if (existingPhoto) {
@@ -891,7 +2045,7 @@ export async function getInvoiceDetails(
 }
 
 // ============================================================================
-// 6. DASHBOARD & REPORTS
+// 7. DASHBOARD & REPORTS
 // ============================================================================
 
 export async function getDashboardMetrics(
@@ -899,8 +2053,11 @@ export async function getDashboardMetrics(
   database: ALIFBillingDatabase = defaultDb
 ): Promise<DashboardMetrics> {
   await database.ensureSeeded();
-  const allInvoices: Invoice[] = await database.invoices.toArray();
-  const allPayments: PaymentRecord[] = await database.payments.toArray();
+  const [allInvoices, allPayments, allVariants] = await Promise.all([
+    database.invoices.toArray(),
+    database.payments.toArray(),
+    canUseInventoryStores(database) ? database.inventoryVariants.toArray() : Promise.resolve([])
+  ]);
 
   let todayInvoiceValuePaise = 0;
   let todayInvoiceCount = 0;
@@ -933,6 +2090,15 @@ export async function getDashboardMetrics(
     }
   }
 
+  let lowStockCount = 0;
+  let outOfStockCount = 0;
+  for (const v of allVariants) {
+    if (!v.isActive) continue;
+    const st = getVariantStockStatus(v);
+    if (st === 'Low Stock') lowStockCount++;
+    else if (st === 'Out of Stock') outOfStockCount++;
+  }
+
   const recentInvoices = [...allInvoices]
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .slice(0, 8);
@@ -944,7 +2110,9 @@ export async function getDashboardMetrics(
     todayInvoiceCount,
     totalOutstandingPaise,
     outstandingInvoiceCount,
-    recentInvoices
+    recentInvoices,
+    lowStockCount,
+    outOfStockCount
   };
 }
 
@@ -993,7 +2161,7 @@ export async function getPeriodReport(
 
     for (const item of inv.items) {
       const cat = catMap[item.category] ? item.category : 'service';
-      catMap[cat].quantity += item.quantity;
+      catMap[cat].quantity = roundStockQty(catMap[cat].quantity + item.quantity);
       catMap[cat].revenuePaise += item.lineTotalPaise;
       if (item.costPricePaise) {
         catMap[cat].estimatedCostPaise += Math.round(item.costPricePaise * item.quantity);
@@ -1002,7 +2170,7 @@ export async function getPeriodReport(
       const key = `${item.category}:${item.name}`;
       const existingItem = itemMap.get(key);
       if (existingItem) {
-        existingItem.quantity += item.quantity;
+        existingItem.quantity = roundStockQty(existingItem.quantity + item.quantity);
         existingItem.revenuePaise += item.lineTotalPaise;
       } else {
         itemMap.set(key, {
@@ -1067,30 +2235,45 @@ export async function getPeriodReport(
 }
 
 // ============================================================================
-// 7. BACKUP & RESTORE (VALIDATED & ATOMIC)
+// 8. BACKUP & RESTORE (VALIDATED, ATOMIC & INVENTORY-AWARE)
 // ============================================================================
 
 export async function exportBackupPayload(
   database: ALIFBillingDatabase = defaultDb
 ): Promise<BackupPayload> {
   await database.ensureSeeded();
-  const [settings, customers, catalogue, invoices, payments] = await Promise.all([
+  const [
+    settings,
+    customers,
+    catalogue,
+    invoices,
+    payments,
+    inventoryVariants,
+    inventoryBundles,
+    inventoryMovements
+  ] = await Promise.all([
     database.settings.toArray(),
     database.customers.toArray(),
     database.catalogue.toArray(),
     database.invoices.toArray(),
-    database.payments.toArray()
+    database.payments.toArray(),
+    canUseInventoryStores(database) ? database.inventoryVariants.toArray() : Promise.resolve([]),
+    canUseInventoryStores(database) ? database.inventoryBundles.toArray() : Promise.resolve([]),
+    canUseInventoryStores(database) ? database.inventoryMovements.toArray() : Promise.resolve([])
   ]);
 
   return {
-    schemaVersion: 2,
+    schemaVersion: 4,
     app: 'ALIF_BILLING_PWA',
     exportedAt: new Date().toISOString(),
     settings,
     customers,
     catalogue,
     invoices,
-    payments
+    payments,
+    inventoryVariants,
+    inventoryBundles,
+    inventoryMovements
   };
 }
 
@@ -1186,6 +2369,27 @@ export function validateBackupPayload(raw: unknown): {
     }
   }
 
+  // Validate optional V4 inventory arrays if present
+  if (obj.inventoryVariants !== undefined) {
+    if (!Array.isArray(obj.inventoryVariants)) {
+      errors.push('inventoryVariants must be an array when provided');
+    } else {
+      for (let i = 0; i < obj.inventoryVariants.length; i++) {
+        const v = obj.inventoryVariants[i] as InventoryVariant;
+        if (!v || typeof v.id !== 'string' || !v.name || typeof v.totalQuantity !== 'number') {
+          errors.push(`Inventory variant at index ${i} is malformed`);
+        }
+      }
+    }
+  }
+
+  if (obj.inventoryBundles !== undefined && !Array.isArray(obj.inventoryBundles)) {
+    errors.push('inventoryBundles must be an array when provided');
+  }
+  if (obj.inventoryMovements !== undefined && !Array.isArray(obj.inventoryMovements)) {
+    errors.push('inventoryMovements must be an array when provided');
+  }
+
   if (errors.length > 0) {
     return { valid: false, errors };
   }
@@ -1200,65 +2404,102 @@ export function validateBackupPayload(raw: unknown): {
 export async function restoreBackupPayload(
   raw: unknown,
   database: ALIFBillingDatabase = defaultDb
-): Promise<{ customers: number; catalogue: number; invoices: number; payments: number }> {
+): Promise<{
+  customers: number;
+  catalogue: number;
+  invoices: number;
+  payments: number;
+  inventoryVariants: number;
+}> {
   const validation = validateBackupPayload(raw);
   if (!validation.valid || !validation.payload) {
     throw new Error(`Backup validation failed: ${validation.errors.join('; ')}`);
   }
 
   const payload = validation.payload;
-
-  return await database.transaction(
-    'rw',
+  const restoreTables: any[] = [
     database.settings,
     database.customers,
     database.catalogue,
     database.invoices,
-    database.payments,
-    async () => {
-      await database.settings.clear();
-      await database.customers.clear();
-      await database.catalogue.clear();
-      await database.invoices.clear();
-      await database.payments.clear();
+    database.payments
+  ];
+  if (canUseInventoryStores(database)) {
+    restoreTables.push(
+      database.inventoryVariants,
+      database.inventoryBundles,
+      database.inventoryMovements
+    );
+  }
 
-      if (payload.settings.length > 0) {
-        await database.settings.bulkPut(payload.settings);
-      } else {
-        await database.settings.put({ ...DEFAULT_SHOP_SETTINGS });
-      }
+  return await database.transaction('rw', ...(restoreTables as [any, ...any[]]), async () => {
+    await database.settings.clear();
+    await database.customers.clear();
+    await database.catalogue.clear();
+    await database.invoices.clear();
+    await database.payments.clear();
 
-      if (payload.catalogue.length > 0) {
-        await database.catalogue.bulkPut(payload.catalogue);
-      } else {
-        await database.catalogue.bulkPut(DEFAULT_CATALOGUE_ITEMS.map((i) => ({ ...i })));
-      }
-
-      if (payload.customers.length > 0) {
-        await database.customers.bulkPut(payload.customers);
-      }
-
-      if (payload.invoices.length > 0) {
-        await database.invoices.bulkPut(payload.invoices);
-      }
-
-      if (payload.payments.length > 0) {
-        await database.payments.bulkPut(payload.payments);
-      }
-
-      return {
-        customers: payload.customers.length,
-        catalogue: payload.catalogue.length,
-        invoices: payload.invoices.length,
-        payments: payload.payments.length
-      };
+    if (payload.settings.length > 0) {
+      await database.settings.bulkPut(payload.settings);
+    } else {
+      await database.settings.put({ ...DEFAULT_SHOP_SETTINGS });
     }
-  );
+
+    if (payload.catalogue.length > 0) {
+      await database.catalogue.bulkPut(payload.catalogue);
+    } else {
+      await database.catalogue.bulkPut(DEFAULT_CATALOGUE_ITEMS.map((i) => ({ ...i })));
+    }
+
+    if (payload.customers.length > 0) {
+      await database.customers.bulkPut(payload.customers);
+    }
+
+    if (payload.invoices.length > 0) {
+      await database.invoices.bulkPut(payload.invoices);
+    }
+
+    if (payload.payments.length > 0) {
+      await database.payments.bulkPut(payload.payments);
+    }
+
+    let restoredVariantsCount = 0;
+    if (canUseInventoryStores(database)) {
+      await database.inventoryVariants.clear();
+      await database.inventoryBundles.clear();
+      await database.inventoryMovements.clear();
+
+      if (payload.inventoryVariants && payload.inventoryVariants.length > 0) {
+        await database.inventoryVariants.bulkPut(payload.inventoryVariants);
+        restoredVariantsCount = payload.inventoryVariants.length;
+      } else {
+        await database.inventoryVariants.bulkPut(DEFAULT_INVENTORY_VARIANTS.map((v) => ({ ...v })));
+        restoredVariantsCount = DEFAULT_INVENTORY_VARIANTS.length;
+      }
+
+      if (payload.inventoryBundles && payload.inventoryBundles.length > 0) {
+        await database.inventoryBundles.bulkPut(payload.inventoryBundles);
+      } else if (!payload.inventoryVariants || payload.inventoryVariants.length === 0) {
+        await database.inventoryBundles.bulkPut(DEFAULT_INVENTORY_BUNDLES.map((b) => ({ ...b })));
+      }
+
+      if (payload.inventoryMovements && payload.inventoryMovements.length > 0) {
+        await database.inventoryMovements.bulkPut(payload.inventoryMovements);
+      }
+    }
+
+    return {
+      customers: payload.customers.length,
+      catalogue: payload.catalogue.length,
+      invoices: payload.invoices.length,
+      payments: payload.payments.length,
+      inventoryVariants: restoredVariantsCount
+    };
+  });
 }
 
-
 // ============================================================================
-// 8. ITEM PHOTO PROCESSING & INDEXEDDB BLOB STORAGE
+// 9. ITEM PHOTO PROCESSING & INDEXEDDB BLOB STORAGE
 // ============================================================================
 
 const MAX_RAW_FILE_BYTES = 15 * 1024 * 1024; // 15 MB raw upload ceiling
@@ -1456,7 +2697,14 @@ export async function saveItemPhotoFromFile(
     sizeBytes: processed.sizeBytes,
     createdAt: new Date().toISOString()
   };
-  await database.itemPhotos.put(record);
+  memoryPhotoFallback.set(record.id, record);
+  if (canUseItemPhotosStore(database)) {
+    try {
+      await database.itemPhotos.put(record);
+    } catch (_err) {
+      // Fallback to memoryPhotoFallback if objectStore is unavailable
+    }
+  }
   return record;
 }
 
@@ -1465,7 +2713,17 @@ export async function getItemPhoto(
   database: ALIFBillingDatabase = defaultDb
 ): Promise<ItemPhotoRecord | undefined> {
   await database.ensureSeeded();
-  const rec: ItemPhotoRecord | undefined = await database.itemPhotos.get(photoId);
+  let rec: ItemPhotoRecord | undefined;
+  if (canUseItemPhotosStore(database)) {
+    try {
+      rec = await database.itemPhotos.get(photoId);
+    } catch (_err) {
+      rec = undefined;
+    }
+  }
+  if (!rec) {
+    rec = memoryPhotoFallback.get(photoId);
+  }
   if (!rec) return undefined;
   if (!(rec.blob instanceof Blob) && rec.dataUrl) {
     rec.blob = dataUrlToBlob(rec.dataUrl);
@@ -1495,5 +2753,12 @@ export async function deleteItemPhoto(
 ): Promise<void> {
   if (!photoId) return;
   await database.ensureSeeded();
-  await database.itemPhotos.delete(photoId);
+  memoryPhotoFallback.delete(photoId);
+  if (canUseItemPhotosStore(database)) {
+    try {
+      await database.itemPhotos.delete(photoId);
+    } catch (_err) {
+      // Ignore if objectStore is missing
+    }
+  }
 }

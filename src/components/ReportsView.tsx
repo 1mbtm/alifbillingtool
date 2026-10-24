@@ -82,38 +82,38 @@ export function ReportsView({
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Period Selector & CSV Export Controls */}
-      <section className="border-b border-black pb-5 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+      <section className="border-b border-black pb-4 space-y-3.5">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2.5">
           <div>
             <div className="editorial-label">Financial Analytics</div>
-            <h2 className="font-serif text-xl uppercase tracking-[0.18em] text-alif-black font-normal mt-0.5">
+            <h2 className="editorial-heading mt-0.5">
               Sales &amp; Collections Report
             </h2>
-            <p className="text-[11px] text-alif-grey mt-0.5">
-              Separates invoiced sales value from actual payments collected. Cancelled bills are excluded from sales totals.
+            <p className="text-xs text-alif-grey mt-0.5">
+              Separates invoiced sales value from actual payments collected. Cancelled bills are excluded.
             </p>
           </div>
           <div className="flex flex-wrap gap-1.5">
             <button
               type="button"
               onClick={() => applyPreset('today')}
-              className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] border border-alif-border bg-white hover:border-black"
+              className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider border border-alif-border bg-white hover:border-black min-h-[40px]"
             >
               Today
             </button>
             <button
               type="button"
               onClick={() => applyPreset('7days')}
-              className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] border border-alif-border bg-white hover:border-black"
+              className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider border border-alif-border bg-white hover:border-black min-h-[40px]"
             >
               Last 7 Days
             </button>
             <button
               type="button"
               onClick={() => applyPreset('month')}
-              className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] border border-alif-border bg-white hover:border-black"
+              className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider border border-alif-border bg-white hover:border-black min-h-[40px]"
             >
               This Month
             </button>
@@ -121,21 +121,21 @@ export function ReportsView({
               type="button"
               onClick={() => applyPreset('all')}
               data-testid="btn-report-all-time"
-              className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-[0.14em] border border-alif-border bg-white hover:border-black"
+              className="px-3 py-1.5 text-xs font-semibold uppercase tracking-wider border border-alif-border bg-white hover:border-black min-h-[40px]"
             >
               All Time
             </button>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 items-end">
           <div>
             <label className="block editorial-label mb-1">Start Date</label>
             <input
               type="date"
               value={startDate}
               onChange={(e) => setStartDate(e.target.value)}
-              className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
+              className="w-full px-2.5 py-2 text-base font-mono bg-white"
             />
           </div>
           <div>
@@ -144,29 +144,29 @@ export function ReportsView({
               type="date"
               value={endDate}
               onChange={(e) => setEndDate(e.target.value)}
-              className="w-full px-3 py-2 text-xs font-mono border border-alif-border bg-white"
+              className="w-full px-2.5 py-2 text-base font-mono bg-white"
             />
           </div>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="col-span-2 sm:col-span-1 flex flex-wrap gap-1.5">
             <button
               type="button"
               onClick={handleExportReportCsv}
               data-testid="btn-export-report-csv"
-              className="px-3.5 py-2 bg-alif-black text-white text-[10px] font-semibold uppercase tracking-[0.14em] hover:bg-zinc-800"
+              className="px-3.5 py-2 bg-alif-black text-white text-xs font-semibold uppercase tracking-wider hover:bg-zinc-800 min-h-[42px]"
             >
               Export Summary CSV
             </button>
             <button
               type="button"
               onClick={handleExportPeriodInvoicesCsv}
-              className="px-2.5 py-2 border border-alif-border bg-white text-[10px] font-semibold uppercase tracking-[0.14em] hover:border-black"
+              className="px-2.5 py-2 border border-alif-border bg-white text-xs font-semibold uppercase tracking-wider hover:border-black min-h-[42px]"
             >
               Invoices CSV
             </button>
             <button
               type="button"
               onClick={handleExportPeriodPaymentsCsv}
-              className="px-2.5 py-2 border border-alif-border bg-white text-[10px] font-semibold uppercase tracking-[0.14em] hover:border-black"
+              className="px-2.5 py-2 border border-alif-border bg-white text-xs font-semibold uppercase tracking-wider hover:border-black min-h-[42px]"
             >
               Payments CSV
             </button>
@@ -178,72 +178,72 @@ export function ReportsView({
         <>
           {/* 4-Column Hairline Financial Summary */}
           <section className="grid grid-cols-2 lg:grid-cols-4 border-t border-l border-alif-border bg-white">
-            <div className="p-4 border-r border-b border-alif-border">
+            <div className="p-3.5 sm:p-4 border-r border-b border-alif-border">
               <div className="editorial-label">Invoiced Sales Value</div>
               <div
-                className="text-xl font-mono font-normal text-alif-black mt-2"
+                className="text-xl font-mono font-bold text-alif-black mt-1.5"
                 data-testid="report-invoiced-sales"
               >
                 {formatINR(report.invoicedSalesPaise)}
               </div>
-              <div className="text-[10px] font-mono text-alif-grey mt-1.5">
+              <div className="text-xs font-mono text-alif-grey mt-1">
                 {report.activeInvoiceCount} active • Disc {formatINR(report.discountsGivenPaise)}
               </div>
             </div>
 
-            <div className="p-4 border-r border-b border-alif-border">
+            <div className="p-3.5 sm:p-4 border-r border-b border-alif-border">
               <div className="editorial-label">Net Payments Collected</div>
               <div
-                className="text-xl font-mono font-normal text-alif-black mt-2"
+                className="text-xl font-mono font-bold text-alif-black mt-1.5"
                 data-testid="report-net-payments"
               >
                 {formatINR(report.netCashCollectedPaise)}
               </div>
-              <div className="text-[10px] font-mono text-alif-grey mt-1.5">
+              <div className="text-xs font-mono text-alif-grey mt-1">
                 Gross {formatINR(report.paymentsReceivedPaise)} • Ref {formatINR(report.refundsIssuedPaise)}
               </div>
             </div>
 
-            <div className="p-4 border-r border-b border-alif-border">
-              <div className="editorial-label">Period Outstanding</div>
+            <div className="p-3.5 sm:p-4 border-r border-b border-alif-border bg-stone-50">
+              <div className="editorial-label text-alif-charcoal">Period Outstanding</div>
               <div
-                className="text-xl font-mono font-normal text-alif-black mt-2"
+                className="text-xl font-mono font-bold text-alif-black mt-1.5"
                 data-testid="report-outstanding"
               >
                 {formatINR(report.outstandingBalancePaise)}
               </div>
-              <div className="text-[10px] uppercase tracking-wider text-alif-grey mt-1.5">
+              <div className="text-xs text-alif-charcoal mt-1">
                 Uncollected balance
               </div>
             </div>
 
-            <div className="p-4 border-r border-b border-alif-border">
+            <div className="p-3.5 sm:p-4 border-r border-b border-alif-border">
               <div className="editorial-label">Active / Cancelled</div>
-              <div className="text-xl font-mono font-normal text-alif-black mt-2">
+              <div className="text-xl font-mono font-bold text-alif-black mt-1.5">
                 {report.activeInvoiceCount}{' '}
-                <span className="text-xs text-alif-grey">
+                <span className="text-xs font-normal text-alif-grey">
                   / {report.cancelledInvoiceCount} cancelled
                 </span>
               </div>
-              <div className="text-[10px] uppercase tracking-wider text-alif-grey mt-1.5">
+              <div className="text-xs text-alif-grey mt-1">
                 Cancelled excluded
               </div>
             </div>
           </section>
 
           {/* Method & Category Breakdown */}
-          <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <section className="grid grid-cols-1 md:grid-cols-2 gap-5">
             <div className="bg-white border border-alif-border">
               <div className="px-4 py-3 border-b border-alif-border bg-stone-50">
                 <h3 className="editorial-subhead">Collections by Payment Method</h3>
               </div>
               <div className="divide-y px-4">
                 {(['cash', 'upi', 'bank_transfer', 'other'] as PaymentMethod[]).map((m) => (
-                  <div key={m} className="py-2.5 flex items-center justify-between text-xs">
-                    <span className="uppercase tracking-wider text-alif-charcoal">
+                  <div key={m} className="py-2.5 flex items-center justify-between text-sm">
+                    <span className="font-medium text-alif-charcoal">
                       {PAYMENT_METHOD_LABELS[m]}
                     </span>
-                    <span className="font-mono font-semibold text-alif-black">
+                    <span className="font-mono font-bold text-alif-black">
                       {formatINR(report.paymentsByMethod[m] || 0)}
                     </span>
                   </div>
@@ -257,17 +257,17 @@ export function ReportsView({
               </div>
               <div className="divide-y px-4">
                 {report.categoryBreakdown.map((cat) => (
-                  <div key={cat.category} className="py-2.5 flex items-center justify-between text-xs">
+                  <div key={cat.category} className="py-2.5 flex items-center justify-between text-sm">
                     <div>
-                      <div className="font-medium text-alif-black">{cat.label}</div>
-                      <div className="text-[11px] font-mono text-alif-grey">
+                      <div className="font-semibold text-alif-black">{cat.label}</div>
+                      <div className="text-xs font-mono text-alif-grey">
                         Qty: {cat.quantity}
                         {cat.estimatedCostPaise > 0
                           ? ` • Est. Cost: ${formatINR(cat.estimatedCostPaise)}`
                           : ''}
                       </div>
                     </div>
-                    <span className="font-mono font-semibold text-alif-black">
+                    <span className="font-mono font-bold text-alif-black">
                       {formatINR(cat.revenuePaise)}
                     </span>
                   </div>
@@ -292,17 +292,17 @@ export function ReportsView({
                 {report.itemBreakdown.map((it) => (
                   <div
                     key={`${it.category}-${it.name}`}
-                    className="px-4 py-2.5 flex items-center justify-between text-xs"
+                    className="px-4 py-2.5 flex items-center justify-between text-sm"
                   >
                     <div>
                       <span className="font-medium text-alif-black">{it.name}</span>{' '}
-                      <span className="text-[9px] uppercase tracking-widest px-1.5 py-0.5 border border-alif-border text-alif-grey ml-1.5">
+                      <span className="text-[11px] uppercase tracking-wider px-1.5 py-0.5 border border-alif-border bg-stone-50 text-alif-grey ml-1.5">
                         {it.category}
                       </span>
                     </div>
                     <div className="flex items-center gap-4 font-mono">
-                      <span className="text-alif-grey">Qty: {it.quantity}</span>
-                      <span className="font-semibold text-alif-black">
+                      <span className="text-xs text-alif-grey">Qty: {it.quantity}</span>
+                      <span className="font-bold text-alif-black">
                         {formatINR(it.revenuePaise)}
                       </span>
                     </div>

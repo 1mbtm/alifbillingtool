@@ -3,8 +3,12 @@ import {
   CatalogueItem,
   Customer,
   DashboardMetrics,
+  InventoryBundle,
+  InventoryMovement,
+  InventoryVariant,
   Invoice,
   PaymentRecord,
+  PaymentStatus,
   ShopSettings
 } from './types/billing';
 import { DEFAULT_SHOP_SETTINGS } from './db/seed';
@@ -15,21 +19,26 @@ import {
   getTodayIsoDate,
   listCatalogue,
   listCustomers,
+  listInventoryBundles,
+  listInventoryMovements,
+  listInventoryVariants,
   listInvoices
 } from './services/billingService';
 import { DashboardView, NavTab } from './components/DashboardView';
 import { CreateBillView } from './components/CreateBillView';
 import { InvoicesHistoryView } from './components/InvoicesHistoryView';
+import { InventoryView } from './components/InventoryView';
 import { CustomersView } from './components/CustomersView';
 import { CatalogueView } from './components/CatalogueView';
 import { ReportsView } from './components/ReportsView';
 import { SettingsBackupView } from './components/SettingsBackupView';
 import { InvoiceDetailModal } from './components/InvoiceDetailModal';
 
-const NAV_ITEMS: { id: NavTab; label: string }[] = [
+const NAV_ITEMS: { id: NavTab; label: string; isPrimary?: boolean }[] = [
+  { id: 'create-bill', label: '+ New Bill', isPrimary: true },
   { id: 'dashboard', label: 'Overview' },
-  { id: 'create-bill', label: '+ New Bill' },
   { id: 'invoices', label: 'Invoices' },
+  { id: 'inventory', label: 'Inventory' },
   { id: 'customers', label: 'Clients' },
   { id: 'catalogue', label: 'Catalogue' },
   { id: 'reports', label: 'Reports' },
@@ -38,9 +47,13 @@ const NAV_ITEMS: { id: NavTab; label: string }[] = [
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<NavTab>('dashboard');
+  const [invoiceStatusPreset, setInvoiceStatusPreset] = useState<PaymentStatus | 'All'>('All');
   const [settings, setSettings] = useState<ShopSettings>(DEFAULT_SHOP_SETTINGS);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [catalogue, setCatalogue] = useState<CatalogueItem[]>([]);
+  const [inventoryVariants, setInventoryVariants] = useState<InventoryVariant[]>([]);
+  const [inventoryBundles, setInventoryBundles] = useState<InventoryBundle[]>([]);
+  const [inventoryMovements, setInventoryMovements] = useState<InventoryMovement[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [metrics, setMetrics] = useState<DashboardMetrics>({
@@ -73,17 +86,24 @@ export default function App() {
   async function refreshAllData() {
     try {
       await db.ensureSeeded();
-      const [s, custs, cats, invs, pays, dash] = await Promise.all([
-        getShopSettings(),
-        listCustomers(),
-        listCatalogue(),
-        listInvoices(),
-        db.payments.toArray(),
-        getDashboardMetrics()
-      ]);
+      const [s, custs, cats, invVars, invBnds, invMovs, invs, pays, dash] =
+        await Promise.all([
+          getShopSettings(),
+          listCustomers(),
+          listCatalogue(),
+          listInventoryVariants(),
+          listInventoryBundles(),
+          listInventoryMovements(),
+          listInvoices(),
+          db.payments.toArray(),
+          getDashboardMetrics()
+        ]);
       setSettings(s);
       setCustomers(custs);
       setCatalogue(cats);
+      setInventoryVariants(invVars);
+      setInventoryBundles(invBnds);
+      setInventoryMovements(invMovs);
       setInvoices(invs);
       setPayments(pays);
       setMetrics(dash);
@@ -101,58 +121,103 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-alif-bg text-alif-charcoal flex flex-col pb-8 md:pb-10">
-      {/* Sticky Top Header & Navigation */}
+      {/* Sticky Top Header & Navigation (Preserved Top Navigation; No Bottom Nav) */}
       <div className="sticky top-0 z-30 bg-alif-bg border-b border-black no-print">
         <header
           data-testid="app-header"
-          className="max-w-5xl mx-auto px-4 sm:px-6 h-14 flex items-center"
+          className="max-w-5xl mx-auto px-3 sm:px-6 h-12 flex items-center justify-between gap-2"
         >
-          <span
-            onClick={() => setActiveTab('dashboard')}
-            data-testid="brand-wordmark"
-            className="font-ubuntu text-xl tracking-tight text-alif-black font-medium lowercase cursor-pointer"
-          >
-            alif.
-          </span>
-        </header>
+          <div className="flex items-baseline gap-2.5 min-w-0">
+            <span
+              onClick={() => setActiveTab('dashboard')}
+              data-testid="brand-wordmark"
+              className="font-ubuntu text-xl tracking-tight text-alif-black font-medium lowercase cursor-pointer"
+            >
+              alif.
+            </span>
+            <span className="text-xs text-alif-grey truncate">
+              Sahibganj • Offline POS
+            </span>
+          </div>
 
-        {/* Top Navigation Bar (Preserved Separately) */}
-        <nav
-          aria-label="Primary Navigation"
-          className="max-w-5xl mx-auto px-4 sm:px-6 border-t border-alif-border overflow-x-auto bg-white"
-        >
-          <div className="flex items-center gap-1 sm:gap-2">
-            {NAV_ITEMS.map((item) => (
+          <div className="flex items-center gap-2 shrink-0">
+            {metrics.outstandingInvoiceCount > 0 && (
               <button
-                key={item.id}
                 type="button"
                 onClick={() => {
-                  if (item.id === 'create-bill') {
-                    setPreselectedCustomer(null);
-                  }
-                  setActiveTab(item.id);
+                  setInvoiceStatusPreset('Unpaid');
+                  setActiveTab('invoices');
                 }}
-                data-testid={`nav-${item.id}`}
-                className={`px-3.5 py-2.5 text-sm whitespace-nowrap border-b-2 transition min-h-[44px] ${
-                  activeTab === item.id
-                    ? 'border-black text-alif-black font-semibold'
-                    : 'border-transparent text-alif-grey hover:text-alif-black'
-                }`}
+                className="btn-inline text-xs font-mono text-alif-charcoal underline"
+                title="View unpaid bills"
               >
-                {item.label}
+                {metrics.outstandingInvoiceCount} due
               </button>
-            ))}
+            )}
+          </div>
+        </header>
+
+        {/* Top Navigation Bar — All 8 destinations accessible on 360px screens, + New Bill primary */}
+        <nav
+          aria-label="Primary Navigation"
+          className="max-w-5xl mx-auto px-2.5 sm:px-6 py-1.5 border-t border-alif-border bg-white"
+        >
+          <div className="flex flex-wrap items-center gap-1 sm:gap-1.5">
+            {NAV_ITEMS.map((item) => {
+              const isActive = activeTab === item.id;
+              if (item.isPrimary) {
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setPreselectedCustomer(null);
+                      setActiveTab('create-bill');
+                    }}
+                    data-testid={`nav-${item.id}`}
+                    className={`px-3 py-1.5 text-xs sm:text-sm font-semibold whitespace-nowrap border transition min-h-[40px] ${
+                      isActive
+                        ? 'bg-alif-black text-white border-black'
+                        : 'bg-alif-charcoal text-white border-black hover:bg-black'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                );
+              }
+
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    if (item.id === 'invoices') {
+                      setInvoiceStatusPreset('All');
+                    }
+                    setActiveTab(item.id);
+                  }}
+                  data-testid={`nav-${item.id}`}
+                  className={`px-2 py-1.5 text-xs sm:text-sm whitespace-nowrap border-b-2 transition min-h-[40px] ${
+                    isActive
+                      ? 'border-black text-alif-black font-semibold bg-stone-50'
+                      : 'border-transparent text-alif-charcoal hover:text-alif-black hover:bg-stone-50'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              );
+            })}
           </div>
         </nav>
       </div>
 
       {/* Restrained Monochrome Status Toast (Non-obscuring top banner) */}
       {toast && (
-        <div className="max-w-5xl mx-auto w-full px-4 sm:px-6 pt-3 no-print">
+        <div className="max-w-5xl mx-auto w-full px-3 sm:px-6 pt-2.5 no-print">
           <div
             role="status"
             data-testid="toast-banner"
-            className={`px-4 py-2.5 border text-sm font-medium flex items-center justify-between gap-3 ${
+            className={`px-3.5 py-2.5 border text-sm font-medium flex items-center justify-between gap-3 ${
               toast.isError
                 ? 'bg-alif-charcoal text-white border-black'
                 : 'bg-alif-black text-white border-black'
@@ -162,7 +227,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => setToast(null)}
-              className="text-zinc-300 hover:text-white font-semibold px-2 py-1"
+              className="btn-inline text-zinc-300 hover:text-white font-semibold px-2 py-1"
             >
               ✕
             </button>
@@ -172,18 +237,18 @@ export default function App() {
 
       {/* Database Error Notice */}
       {dbError && (
-        <div className="max-w-5xl mx-auto w-full px-4 sm:px-6 mt-4">
-          <div className="bg-white border border-black text-alif-black p-4 text-sm">
+        <div className="max-w-5xl mx-auto w-full px-3 sm:px-6 mt-3">
+          <div className="bg-white border-2 border-black text-alif-black p-3.5 text-sm">
             Database Error: {dbError}
           </div>
         </div>
       )}
 
-      {/* Main Content Area (18px horizontal padding on mobile, 24px on desktop) */}
-      <main className="max-w-5xl mx-auto w-full px-4 sm:px-6 py-6 flex-1">
+      {/* Main Content Area (12px horizontal padding on 360px mobile, 24px on desktop) */}
+      <main className="max-w-5xl mx-auto w-full px-3 sm:px-6 py-4 sm:py-6 flex-1">
         {isInitializing ? (
           <div className="bg-white border border-alif-border p-8 text-center space-y-2">
-            <div className="font-ubuntu text-lg font-medium text-alif-black">alif.</div>
+            <div className="font-ubuntu text-lg font-medium text-alif-black lowercase">alif.</div>
             <p className="text-xs text-alif-grey uppercase tracking-widest">
               Initializing local database &amp; offline storage...
             </p>
@@ -193,7 +258,17 @@ export default function App() {
             {activeTab === 'dashboard' && (
               <DashboardView
                 metrics={metrics}
-                onNavigate={(tab) => setActiveTab(tab)}
+                onNavigate={(tab, statusFilter) => {
+                  if (tab === 'invoices' && statusFilter) {
+                    setInvoiceStatusPreset(statusFilter);
+                  } else if (tab === 'invoices') {
+                    setInvoiceStatusPreset('All');
+                  }
+                  if (tab === 'create-bill') {
+                    setPreselectedCustomer(null);
+                  }
+                  setActiveTab(tab);
+                }}
                 onSelectInvoice={(inv) => {
                   setOpenModalInShareMode(false);
                   setSelectedInvoiceId(inv.id);
@@ -201,77 +276,91 @@ export default function App() {
               />
             )}
 
-        {activeTab === 'create-bill' && (
-          <CreateBillView
-            customers={customers}
-            catalogue={catalogue}
-            settings={settings}
-            preselectedCustomer={preselectedCustomer}
-            onNotify={showNotification}
-            onBillCreated={async (created) => {
-              await refreshAllData();
-              setOpenModalInShareMode(false);
-              setSelectedInvoiceId(created.id);
-            }}
-          />
-        )}
+            {activeTab === 'create-bill' && (
+              <CreateBillView
+                customers={customers}
+                catalogue={catalogue}
+                inventoryVariants={inventoryVariants}
+                invoices={invoices}
+                settings={settings}
+                preselectedCustomer={preselectedCustomer}
+                onNotify={showNotification}
+                onBillCreated={async (created) => {
+                  await refreshAllData();
+                  setOpenModalInShareMode(false);
+                  setSelectedInvoiceId(created.id);
+                }}
+              />
+            )}
 
-        {activeTab === 'invoices' && (
-          <InvoicesHistoryView
-            invoices={invoices}
-            settings={settings}
-            onSelectInvoice={(inv, openShare = false) => {
-              setOpenModalInShareMode(openShare);
-              setSelectedInvoiceId(inv.id);
-            }}
-            onNotify={showNotification}
-          />
-        )}
+            {activeTab === 'invoices' && (
+              <InvoicesHistoryView
+                invoices={invoices}
+                settings={settings}
+                initialStatusFilter={invoiceStatusPreset}
+                onSelectInvoice={(inv, openShare = false) => {
+                  setOpenModalInShareMode(openShare);
+                  setSelectedInvoiceId(inv.id);
+                }}
+                onNotify={showNotification}
+              />
+            )}
 
-        {activeTab === 'customers' && (
-          <CustomersView
-            customers={customers}
-            invoices={invoices}
-            onRefresh={refreshAllData}
-            onSelectInvoice={(inv) => {
-              setOpenModalInShareMode(false);
-              setSelectedInvoiceId(inv.id);
-            }}
-            onStartBillForCustomer={(cust) => {
-              setPreselectedCustomer(cust);
-              setActiveTab('create-bill');
-            }}
-            onNotify={showNotification}
-          />
-        )}
+            {activeTab === 'inventory' && (
+              <InventoryView
+                variants={inventoryVariants}
+                bundles={inventoryBundles}
+                movements={inventoryMovements}
+                onRefresh={refreshAllData}
+                onNotify={showNotification}
+              />
+            )}
 
-        {activeTab === 'catalogue' && (
-          <CatalogueView
-            catalogue={catalogue}
-            onRefresh={refreshAllData}
-            onNotify={showNotification}
-          />
-        )}
+            {activeTab === 'customers' && (
+              <CustomersView
+                customers={customers}
+                invoices={invoices}
+                onRefresh={refreshAllData}
+                onSelectInvoice={(inv) => {
+                  setOpenModalInShareMode(false);
+                  setSelectedInvoiceId(inv.id);
+                }}
+                onStartBillForCustomer={(cust) => {
+                  setPreselectedCustomer(cust);
+                  setActiveTab('create-bill');
+                }}
+                onNotify={showNotification}
+              />
+            )}
 
-        {activeTab === 'reports' && (
-          <ReportsView
-            invoices={invoices}
-            payments={payments}
-            onNotify={showNotification}
-          />
-        )}
+            {activeTab === 'catalogue' && (
+              <CatalogueView
+                catalogue={catalogue}
+                inventoryVariants={inventoryVariants}
+                onRefresh={refreshAllData}
+                onNotify={showNotification}
+              />
+            )}
 
-        {activeTab === 'settings' && (
-          <SettingsBackupView
-            settings={settings}
-            customers={customers}
-            catalogue={catalogue}
-            invoices={invoices}
-            payments={payments}
-            onRefreshAll={refreshAllData}
-            onNotify={showNotification}
-          />
-        )}
+            {activeTab === 'reports' && (
+              <ReportsView
+                invoices={invoices}
+                payments={payments}
+                onNotify={showNotification}
+              />
+            )}
+
+            {activeTab === 'settings' && (
+              <SettingsBackupView
+                settings={settings}
+                customers={customers}
+                catalogue={catalogue}
+                invoices={invoices}
+                payments={payments}
+                onRefreshAll={refreshAllData}
+                onNotify={showNotification}
+              />
+            )}
           </>
         )}
       </main>
