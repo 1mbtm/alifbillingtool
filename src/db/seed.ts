@@ -1,6 +1,7 @@
 import {
   CatalogueItem,
   InventoryBundle,
+  InventoryMovement,
   InventoryVariant,
   ShopSettings
 } from '../types/billing';
@@ -19,7 +20,7 @@ export const DEFAULT_SHOP_SETTINGS: ShopSettings = {
   currencySymbol: '₹',
   invoicePrefix: 'ALIF',
   nextInvoiceSequence: 1,
-  taxEnabled: false, // Tax disabled by default; never assume GST registration
+  taxEnabled: false,
   taxLabel: 'Tax',
   taxRatePercent: 0,
   defaultPaymentMethod: 'cash',
@@ -314,9 +315,40 @@ export const DEFAULT_INVENTORY_BUNDLES: InventoryBundle[] = [
   }
 ];
 
+export const DEFAULT_INVENTORY_MOVEMENTS: InventoryMovement[] = [
+  {
+    id: 'mov-seed-01',
+    variantId: 'var-fandy-silk-allover-green',
+    bundleId: 'bnd-fandy-green-01',
+    bundleCode: 'BND-FSG-01',
+    type: 'receive',
+    quantityDelta: 4.5,
+    balanceAfter: 4.5,
+    unit: 'm',
+    reason: 'Opening physical count (Roll #1)',
+    date: '2026-10-01',
+    createdAt: '2026-10-01T09:00:00.000Z'
+  },
+  {
+    id: 'mov-seed-02',
+    variantId: 'var-fandy-silk-allover-green',
+    bundleId: 'bnd-fandy-green-02',
+    bundleCode: 'BND-FSG-02',
+    type: 'receive',
+    quantityDelta: 8.0,
+    balanceAfter: 12.5,
+    unit: 'm',
+    reason: 'Incoming restock roll #2 from Surat Silk House',
+    date: '2026-10-12',
+    createdAt: '2026-10-12T11:30:00.000Z'
+  }
+];
+
 /**
  * Default configurable catalogue for ALiF Ladies Tailor.
- * Price ranges and defaults are strictly configurable defaults, never fixed prices.
+ * Every seeded InventoryVariant has a 1:1 linked CatalogueItem, while generic items
+ * ('prd-fabric', 'prd-lace', 'prd-latkan', 'prd-dori', 'itm-custom') are non-stock
+ * so they never silently deduct stock from a specific variant.
  */
 export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
   // Tailoring Services (Never reduce physical inventory stock)
@@ -324,12 +356,13 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'srv-astar-blouse',
     name: 'Astar Blouse',
     category: 'service',
-    defaultPricePaise: 45000, // ₹450 default
+    defaultPricePaise: 45000,
     minPricePaise: 35000,
     maxPricePaise: 75000,
     unit: 'pc',
     description: 'Lined (astar) blouse stitching with custom neck & sleeve finish',
     isActive: true,
+    inventoryVariantId: null,
     isPinned: true,
     productType: 'Blouse Stitching',
     workDesign: 'Astar Lined',
@@ -340,12 +373,13 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'srv-plain-blouse',
     name: 'Plain Blouse',
     category: 'service',
-    defaultPricePaise: 25000, // ₹250 default
+    defaultPricePaise: 25000,
     minPricePaise: 18000,
     maxPricePaise: 40000,
     unit: 'pc',
     description: 'Standard unlined plain blouse stitching & hemming',
     isActive: true,
+    inventoryVariantId: null,
     isPinned: true,
     productType: 'Blouse Stitching',
     workDesign: 'Plain Unlined',
@@ -356,12 +390,13 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'srv-fall-pico',
     name: 'Fall & Pico',
     category: 'service',
-    defaultPricePaise: 12000, // ₹120 default
+    defaultPricePaise: 12000,
     minPricePaise: 8000,
     maxPricePaise: 20000,
     unit: 'saree',
     description: 'Saree fall stitching and edge pico finishing',
     isActive: true,
+    inventoryVariantId: null,
     isPinned: true,
     productType: 'Saree Finishing',
     workDesign: 'Fall & Pico',
@@ -372,12 +407,13 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'srv-suit',
     name: 'Suit',
     category: 'service',
-    defaultPricePaise: 65000, // ₹650 default
+    defaultPricePaise: 65000,
     minPricePaise: 45000,
     maxPricePaise: 110000,
     unit: 'set',
     description: 'Complete salwar kameez suit stitching (with or without lining)',
     isActive: true,
+    inventoryVariantId: null,
     isPinned: true,
     productType: 'Suit Stitching',
     workDesign: 'Salwar Suit',
@@ -388,12 +424,13 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'srv-kurti',
     name: 'Kurti',
     category: 'service',
-    defaultPricePaise: 40000, // ₹400 default
+    defaultPricePaise: 40000,
     minPricePaise: 25000,
     maxPricePaise: 75000,
     unit: 'pc',
     description: 'Everyday or designer kurti stitching',
     isActive: true,
+    inventoryVariantId: null,
     isPinned: false,
     productType: 'Kurti Stitching',
     workDesign: 'Custom Neckline',
@@ -404,12 +441,13 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'srv-alter',
     name: 'Alter',
     category: 'service',
-    defaultPricePaise: 10000, // ₹100 default
+    defaultPricePaise: 10000,
     minPricePaise: 5000,
     maxPricePaise: 30000,
     unit: 'pc',
     description: 'Garment fitting, resizing, zip or length alteration',
     isActive: true,
+    inventoryVariantId: null,
     productType: 'Alteration',
     workDesign: 'Fitting & Resize',
     createdAt: SEED_TIMESTAMP,
@@ -419,12 +457,13 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'srv-patiala',
     name: 'Patiala',
     category: 'service',
-    defaultPricePaise: 75000, // ₹750 default
+    defaultPricePaise: 75000,
     minPricePaise: 55000,
     maxPricePaise: 120000,
     unit: 'set',
     description: 'Full pleated Patiala salwar suit / bottom stitching',
     isActive: true,
+    inventoryVariantId: null,
     productType: 'Suit Stitching',
     workDesign: 'Full Patiala Pleats',
     createdAt: SEED_TIMESTAMP,
@@ -434,12 +473,13 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'srv-palazzo',
     name: 'Palazzo',
     category: 'service',
-    defaultPricePaise: 55000, // ₹550 default
+    defaultPricePaise: 55000,
     minPricePaise: 35000,
     maxPricePaise: 90000,
     unit: 'pc',
     description: 'Flared palazzo pant or palazzo suit stitching',
     isActive: true,
+    inventoryVariantId: null,
     productType: 'Bottoms & Sets',
     workDesign: 'Flared Palazzo',
     createdAt: SEED_TIMESTAMP,
@@ -449,12 +489,13 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'srv-gharara',
     name: 'Gharara',
     category: 'service',
-    defaultPricePaise: 140000, // ₹1,400 default
+    defaultPricePaise: 140000,
     minPricePaise: 100000,
     maxPricePaise: 250000,
     unit: 'set',
     description: 'Traditional jointed flared gharara suit stitching',
     isActive: true,
+    inventoryVariantId: null,
     productType: 'Bridal & Festive',
     workDesign: 'Jointed Gharara',
     createdAt: SEED_TIMESTAMP,
@@ -464,12 +505,13 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'srv-sharara',
     name: 'Sharara',
     category: 'service',
-    defaultPricePaise: 135000, // ₹1,350 default
+    defaultPricePaise: 135000,
     minPricePaise: 95000,
     maxPricePaise: 240000,
     unit: 'set',
     description: 'Festive flowing sharara suit stitching',
     isActive: true,
+    inventoryVariantId: null,
     productType: 'Bridal & Festive',
     workDesign: 'Flowing Sharara',
     createdAt: SEED_TIMESTAMP,
@@ -479,12 +521,13 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'srv-frock',
     name: 'Frock',
     category: 'service',
-    defaultPricePaise: 85000, // ₹850 default
+    defaultPricePaise: 85000,
     minPricePaise: 50000,
     maxPricePaise: 160000,
     unit: 'pc',
     description: 'Anarkali frock, gown or pleated dress stitching',
     isActive: true,
+    inventoryVariantId: null,
     productType: 'Gowns & Dresses',
     workDesign: 'Anarkali / Pleated',
     createdAt: SEED_TIMESTAMP,
@@ -494,19 +537,20 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'srv-lehenga',
     name: 'Lehenga',
     category: 'service',
-    defaultPricePaise: 220000, // ₹2,200 default
+    defaultPricePaise: 220000,
     minPricePaise: 150000,
     maxPricePaise: 450000,
     unit: 'set',
     description: 'Bridal & festive lehenga choli stitching with cancan/astar options',
     isActive: true,
+    inventoryVariantId: null,
     productType: 'Bridal & Festive',
     workDesign: 'Bridal Lehenga Set',
     createdAt: SEED_TIMESTAMP,
     updatedAt: SEED_TIMESTAMP
   },
 
-  // Tailoring Materials & Products (Can link to physical inventory variants)
+  // 1:1 Inventory-Linked Material Variants (All 8 seeded InventoryVariants synced to New Bill & Catalogue)
   {
     id: 'prd-fandy-silk-green',
     name: 'Green Fandy Silk — All-over Work',
@@ -545,19 +589,115 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     updatedAt: SEED_TIMESTAMP
   },
   {
-    id: 'prd-fabric',
-    name: 'Fabric',
+    id: 'prd-fandy-silk-gold',
+    name: 'Champagne Gold Fandy Silk — Small Butti',
     category: 'product',
-    defaultPricePaise: 12000, // ₹120/mtr default
-    minPricePaise: 6000,
-    maxPricePaise: 60000,
+    defaultPricePaise: 42000,
+    costPricePaise: 28000,
+    unit: 'm',
+    inventoryVariantId: 'var-fandy-silk-butti-gold',
+    productType: 'Fandy Silk',
+    workDesign: 'Small Butti',
+    color: 'Champagne Gold',
+    description: 'Fabric → Fandy Silk → Small Butti → Champagne Gold',
+    isActive: true,
+    createdAt: SEED_TIMESTAMP,
+    updatedAt: SEED_TIMESTAMP
+  },
+  {
+    id: 'prd-cotton-astar-ivory',
+    name: 'Ivory Cotton Astar — Plain Lining',
+    category: 'product',
+    defaultPricePaise: 10000,
     costPricePaise: 6500,
     unit: 'm',
     inventoryVariantId: 'var-cotton-astar-plain-ivory',
     productType: 'Cotton Astar',
     workDesign: 'Plain Lining',
     color: 'Ivory',
-    description: 'Cotton astar lining, crepe, satin or dress fabric material',
+    isPinned: true,
+    description: 'Fabric → Cotton Astar → Plain Lining → Ivory',
+    isActive: true,
+    createdAt: SEED_TIMESTAMP,
+    updatedAt: SEED_TIMESTAMP
+  },
+  {
+    id: 'prd-cotton-astar-black',
+    name: 'Jet Black Cotton Astar — Plain Lining',
+    category: 'product',
+    defaultPricePaise: 10000,
+    costPricePaise: 6500,
+    unit: 'm',
+    inventoryVariantId: 'var-cotton-astar-plain-black',
+    productType: 'Cotton Astar',
+    workDesign: 'Plain Lining',
+    color: 'Jet Black',
+    description: 'Fabric → Cotton Astar → Plain Lining → Jet Black',
+    isActive: true,
+    createdAt: SEED_TIMESTAMP,
+    updatedAt: SEED_TIMESTAMP
+  },
+  {
+    id: 'prd-organza-scallop-rose',
+    name: 'Dusty Rose Pure Organza — Scallop Zari',
+    category: 'product',
+    defaultPricePaise: 55000,
+    costPricePaise: 38000,
+    unit: 'm',
+    inventoryVariantId: 'var-organza-scallop-rose',
+    productType: 'Pure Organza',
+    workDesign: 'Scallop Zari',
+    color: 'Dusty Rose',
+    description: 'Fabric → Pure Organza → Scallop Zari → Dusty Rose',
+    isActive: true,
+    createdAt: SEED_TIMESTAMP,
+    updatedAt: SEED_TIMESTAMP
+  },
+  {
+    id: 'prd-lace-gota-gold',
+    name: 'Antique Gold Gota Patti Lace — Cutwork Border',
+    category: 'product',
+    defaultPricePaise: 6000,
+    costPricePaise: 3500,
+    unit: 'm',
+    inventoryVariantId: 'var-lace-gota-gold',
+    productType: 'Gota Patti Lace',
+    workDesign: 'Cutwork Border',
+    color: 'Antique Gold',
+    description: 'Lace & Borders → Gota Patti Lace → Cutwork Border → Antique Gold',
+    isActive: true,
+    createdAt: SEED_TIMESTAMP,
+    updatedAt: SEED_TIMESTAMP
+  },
+  {
+    id: 'prd-latkan-bridal-ruby',
+    name: 'Ruby Gold Bridal Latkan — Kundan Tassel',
+    category: 'product',
+    defaultPricePaise: 15000,
+    costPricePaise: 9000,
+    unit: 'pair',
+    inventoryVariantId: 'var-latkan-bridal-ruby',
+    productType: 'Bridal Latkan',
+    workDesign: 'Kundan Tassel',
+    color: 'Ruby Gold',
+    description: 'Trims & Latkan → Bridal Latkan → Kundan Tassel → Ruby Gold',
+    isActive: true,
+    createdAt: SEED_TIMESTAMP,
+    updatedAt: SEED_TIMESTAMP
+  },
+
+  // Generic Non-Stock Material & Custom Items (Never silently deduct stock from a specific variant)
+  {
+    id: 'prd-fabric',
+    name: 'Fabric',
+    category: 'product',
+    defaultPricePaise: 12000,
+    minPricePaise: 6000,
+    maxPricePaise: 60000,
+    costPricePaise: 6500,
+    unit: 'm',
+    inventoryVariantId: null,
+    description: 'General non-stock dress fabric or lining material',
     isActive: true,
     createdAt: SEED_TIMESTAMP,
     updatedAt: SEED_TIMESTAMP
@@ -566,16 +706,13 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'prd-lace',
     name: 'Lace',
     category: 'product',
-    defaultPricePaise: 6000, // ₹60/mtr default
+    defaultPricePaise: 6000,
     minPricePaise: 2000,
     maxPricePaise: 30000,
-    costPricePaise: 3500, // ₹35/mtr optional cost
+    costPricePaise: 3500,
     unit: 'm',
-    inventoryVariantId: 'var-lace-gota-gold',
-    productType: 'Gota Patti Lace',
-    workDesign: 'Cutwork Border',
-    color: 'Antique Gold',
-    description: 'Gota patti, zari, velvet or designer border lace',
+    inventoryVariantId: null,
+    description: 'General non-stock decorative border lace or trim',
     isActive: true,
     createdAt: SEED_TIMESTAMP,
     updatedAt: SEED_TIMESTAMP
@@ -584,16 +721,13 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'prd-latkan',
     name: 'Latkan',
     category: 'product',
-    defaultPricePaise: 15000, // ₹150/pair default
+    defaultPricePaise: 15000,
     minPricePaise: 5000,
     maxPricePaise: 45000,
-    costPricePaise: 9000, // ₹90/pair optional cost
+    costPricePaise: 9000,
     unit: 'pair',
-    inventoryVariantId: 'var-latkan-bridal-ruby',
-    productType: 'Bridal Latkan',
-    workDesign: 'Kundan Tassel',
-    color: 'Ruby Gold',
-    description: 'Decorative blouse/lehenga back tassels & latkan pair',
+    inventoryVariantId: null,
+    description: 'General non-stock decorative blouse/lehenga back tassels & latkan pair',
     isActive: true,
     createdAt: SEED_TIMESTAMP,
     updatedAt: SEED_TIMESTAMP
@@ -602,11 +736,12 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'prd-dori',
     name: 'Dori',
     category: 'product',
-    defaultPricePaise: 5000, // ₹50/pc default
+    defaultPricePaise: 5000,
     minPricePaise: 2500,
     maxPricePaise: 15000,
-    costPricePaise: 2500, // ₹25/pc optional cost
+    costPricePaise: 2500,
     unit: 'pc',
+    inventoryVariantId: null,
     productType: 'Piping & Cord',
     workDesign: 'Back Tie Dori',
     color: 'Assorted',
@@ -619,10 +754,11 @@ export const DEFAULT_CATALOGUE_ITEMS: CatalogueItem[] = [
     id: 'itm-custom',
     name: 'Custom Item',
     category: 'custom',
-    defaultPricePaise: 20000, // ₹200 configurable default
+    defaultPricePaise: 20000,
     minPricePaise: 1000,
     maxPricePaise: 500000,
     unit: 'item',
+    inventoryVariantId: null,
     description: 'Custom bespoke work, embroidery, button/tassel work or special add-on',
     isActive: true,
     createdAt: SEED_TIMESTAMP,

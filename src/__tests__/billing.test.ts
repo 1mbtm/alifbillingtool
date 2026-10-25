@@ -1589,12 +1589,12 @@ describe('11. High-Priority Shop-Counter Usability: Category-Aware Focus, Condit
     } = await import('../utils/search');
 
     expect(resolveCategoryFocusTarget('service', false)).toEqual({
-      target: 'price',
+      target: 'qty',
       selectText: false
     });
     expect(resolveCategoryFocusTarget('product', true)).toEqual({
       target: 'qty',
-      selectText: true
+      selectText: false
     });
     expect(normalizeCustomerPhoneDigits('+91 98765-43210')).toBe('9876543210');
     expect(normalizeCustomerPhoneDigits('09876543210')).toBe('9876543210');
@@ -1693,5 +1693,472 @@ describe('11. High-Priority Shop-Counter Usability: Category-Aware Focus, Condit
     const history = await getCustomerHistory(customers[0].id, db);
     expect(history.totalBilledPaise).toBe(169500);
     expect(history.totalOutstandingPaise).toBe(119500);
+  });
+});
+
+describe('12. Service-Only Garment Collection Notice vs. Product-Only Bills', () => {
+  const testDbName = 'test_alif_service_vs_product_footer';
+  let db: ALIFBillingDatabase;
+
+  beforeEach(async () => {
+    await Dexie.delete(testDbName);
+    db = new ALIFBillingDatabase(testDbName);
+    await db.ensureSeeded();
+  });
+
+  it('includes "Please bring this bill at the time of garment collection." ONLY when service items are selected and omits it for product-only bills', async () => {
+    const {
+      buildConciseInvoiceMessage,
+      buildShareBillText,
+      generateInvoiceBillImage,
+      generateInvoicePdfBytes,
+      resolveInvoiceFooterText
+    } = await import('../utils/pdf');
+    const settings = await getShopSettings(db);
+
+    // 1. Bill with a tailoring service item -> MUST include garment collection notice
+    const serviceBill = await createInvoice(
+      {
+        customerName: 'Shabnam Ara',
+        customerPhone: '9876543211',
+        invoiceDate: '2026-10-24',
+        items: [
+          {
+            catalogueItemId: 'srv-astar-blouse',
+            name: 'Astar Blouse',
+            category: 'service',
+            quantity: 1,
+            unit: 'pc',
+            unitPricePaise: 45000
+          }
+        ],
+        advancePaise: 20000
+      },
+      db
+    );
+
+    const serviceFooter = resolveInvoiceFooterText(serviceBill.invoice, settings);
+    expect(serviceFooter).toContain('Please bring this bill at the time of garment collection.');
+
+    const serviceShareText = buildShareBillText(serviceBill.invoice, settings);
+    expect(serviceShareText).toContain('Please bring this bill at the time of garment collection.');
+
+    const serviceConciseMsg = buildConciseInvoiceMessage(serviceBill.invoice, settings);
+    expect(serviceConciseMsg).toContain('Please bring this bill at the time of garment collection.');
+
+    const serviceImg = await generateInvoiceBillImage(
+      serviceBill.invoice,
+      serviceBill.payments,
+      settings
+    );
+    expect(serviceImg.renderedLines.join(' ')).toContain(
+      'Please bring this bill at the time of garment collection.'
+    );
+
+    const servicePdfText = Buffer.from(
+      generateInvoicePdfBytes(serviceBill.invoice, serviceBill.payments, settings)
+    ).toString('latin1');
+    expect(servicePdfText).toContain('Please bring this bill at the time of garment collection.');
+
+    // 2. Bill with ONLY products/materials -> MUST NOT include garment collection notice
+    const productOnlyBill = await createInvoice(
+      {
+        customerName: 'Kiran Devi',
+        customerPhone: '9876543212',
+        invoiceDate: '2026-10-24',
+        items: [
+          {
+            catalogueItemId: 'prd-latkan',
+            name: 'Latkan',
+            category: 'product',
+            isNonStock: true,
+            quantity: 2,
+            unit: 'pair',
+            unitPricePaise: 15000
+          }
+        ],
+        advancePaise: 30000
+      },
+      db
+    );
+
+    const productFooter = resolveInvoiceFooterText(productOnlyBill.invoice, settings);
+    expect(productFooter).toContain('Thank you for choosing alif.');
+    expect(productFooter).not.toContain('Please bring this bill at the time of garment collection.');
+
+    const productShareText = buildShareBillText(productOnlyBill.invoice, settings);
+    expect(productShareText).not.toContain('Please bring this bill at the time of garment collection.');
+
+    const productConciseMsg = buildConciseInvoiceMessage(productOnlyBill.invoice, settings);
+    expect(productConciseMsg).not.toContain('Please bring this bill at the time of garment collection.');
+
+    const productImg = await generateInvoiceBillImage(
+      productOnlyBill.invoice,
+      productOnlyBill.payments,
+      settings
+    );
+    expect(productImg.renderedLines.join(' ')).not.toContain(
+      'Please bring this bill at the time of garment collection.'
+    );
+
+    const productPdfText = Buffer.from(
+      generateInvoicePdfBytes(productOnlyBill.invoice, productOnlyBill.payments, settings)
+    ).toString('latin1');
+    expect(productPdfText).not.toContain('Please bring this bill at the time of garment collection.');
+  });
+});
+
+describe('13. All 6 Shop-Owner Inventory & Billing Improvements', () => {
+  const testDbName = 'test_alif_db_inv_6_improvements';
+  let db: ALIFBillingDatabase;
+
+  beforeEach(async () => {
+    await Dexie.delete(testDbName);
+    db = new ALIFBillingDatabase(testDbName);
+    await db.ensureSeeded();
+  });
+
+  it('Improvement 1: syncs all 8 seeded variants 1:1 with Catalogue, keeps generic items non-stock, syncs edits bidirectionally, and blocks/redirects duplicate variants', async () => {
+    const { saveInventoryVariant, saveCatalogueItem, toggleCatalogueItemPin, listCatalogue, listInventoryVariants, createInvoice } = await import('../services/billingService');
+
+    const [variants, catalogue] = await Promise.all([
+      listInventoryVariants({}, db),
+      listCatalogue({}, db)
+    ]);
+
+    expect(variants.length).toBe(8);
+
+    // Every single active variant (including Champagne Gold, Jet Black Astar, Dusty Rose Organza) has a 1:1 linked CatalogueItem
+    for (const v of variants) {
+      const linked = catalogue.filter((c) => c.inventoryVariantId === v.id);
+      expect(linked.length).toBe(1);
+      expect(linked[0].name).toBe(v.name);
+      expect(linked[0].color).toBe(v.color);
+      expect(linked[0].workDesign).toBe(v.workDesign);
+      expect(linked[0].unit).toBe(v.unit);
+    }
+
+    // Generic items ('prd-fabric', 'prd-lace', 'prd-latkan', 'prd-dori') are non-stock so they never silently deduct from a specific variant
+    for (const genericId of ['prd-fabric', 'prd-lace', 'prd-latkan', 'prd-dori']) {
+      const genItem = catalogue.find((c) => c.id === genericId)!;
+      expect(genItem).toBeDefined();
+      expect(genItem.inventoryVariantId).toBe(null);
+    }
+
+    const ivoryBefore = (await listInventoryVariants({}, db)).find(
+      (v) => v.id === 'var-cotton-astar-plain-ivory'
+    )!;
+    expect(ivoryBefore.totalQuantity).toBe(24);
+
+    // Billing generic 'prd-fabric' must NOT deduct from Ivory Cotton Astar
+    await createInvoice(
+      {
+        customerName: 'Shabnam Ara',
+        customerPhone: '9876501122',
+        items: [
+          {
+            catalogueItemId: 'prd-fabric',
+            name: 'Fabric',
+            category: 'product',
+            quantity: 4,
+            unit: 'm',
+            unitPricePaise: 15000
+          }
+        ]
+      },
+      db
+    );
+    const ivoryAfterGenericBill = (await listInventoryVariants({}, db)).find(
+      (v) => v.id === 'var-cotton-astar-plain-ivory'
+    )!;
+    expect(ivoryAfterGenericBill.totalQuantity).toBe(24);
+
+    // Editing an InventoryVariant automatically syncs name, color, workDesign, unit, ref price, photo, active, and pin status to its linked CatalogueItem
+    const sampleDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
+    await saveInventoryVariant(
+      {
+        id: 'var-fandy-silk-butti-gold',
+        category: 'Fabric',
+        productType: 'Fandy Silk',
+        workDesign: 'Zari Butti',
+        color: 'Royal Gold',
+        unit: 'm',
+        purchaseCostPaise: 29000,
+        defaultSellingPricePaise: 46000,
+        photoDataUrl: sampleDataUrl,
+        isPinned: true,
+        isActive: true
+      },
+      db
+    );
+
+    const catAfterEdit = await listCatalogue({}, db);
+    const syncedGoldCat = catAfterEdit.find(
+      (c) => c.inventoryVariantId === 'var-fandy-silk-butti-gold'
+    )!;
+    expect(syncedGoldCat.name).toBe('Royal Gold Fandy Silk — Zari Butti');
+    expect(syncedGoldCat.color).toBe('Royal Gold');
+    expect(syncedGoldCat.workDesign).toBe('Zari Butti');
+    expect(syncedGoldCat.defaultPricePaise).toBe(46000);
+    expect(syncedGoldCat.costPricePaise).toBe(29000);
+    expect(syncedGoldCat.photoDataUrl).toBe(sampleDataUrl);
+    expect(syncedGoldCat.isPinned).toBe(true);
+
+    // Toggling pin on the CatalogueItem syncs back to InventoryVariant
+    await toggleCatalogueItemPin(syncedGoldCat.id, false, db);
+    const goldVarAfterUnpin = (await listInventoryVariants({}, db)).find(
+      (v) => v.id === 'var-fandy-silk-butti-gold'
+    )!;
+    expect(goldVarAfterUnpin.isPinned).toBe(false);
+
+    // Duplicate variant protection: attempting to create a new variant with identical normalized attributes throws by default
+    await expect(
+      saveInventoryVariant(
+        {
+          category: 'fabric',
+          productType: 'fandy silk',
+          workDesign: 'all-over work',
+          color: 'GREEN',
+          unit: 'm',
+          purchaseCostPaise: 32000,
+          defaultSellingPricePaise: 48000,
+          initialBundleQuantity: 5.5
+        },
+        db
+      )
+    ).rejects.toThrow(/Duplicate variant already exists/i);
+
+    // Receiving into existing variant on duplicate adds a roll without creating a duplicate variant
+    const dupRes = await saveInventoryVariant(
+      {
+        category: 'Fabric',
+        productType: 'Fandy Silk',
+        workDesign: 'All-over Work',
+        color: 'Green',
+        unit: 'm',
+        purchaseCostPaise: 33000,
+        defaultSellingPricePaise: 49000,
+        initialBundleQuantity: 5.5,
+        receiveIntoExistingOnDuplicate: true
+      },
+      db
+    );
+    expect(dupRes.receivedIntoExisting).toBe(true);
+    expect(dupRes.variant.id).toBe('var-fandy-silk-allover-green');
+    expect(dupRes.variant.totalQuantity).toBe(18); // 12.5 + 5.5
+    const allVarsAfterDup = await listInventoryVariants({}, db);
+    expect(allVarsAfterDup.length).toBe(8);
+  });
+
+  it('Improvement 3 & 6: supports exact actual-remaining stock adjustment, safe roll edit/delete protection, and automatic roll-to-variant photo inheritance', async () => {
+    const {
+      adjustInventoryStock,
+      receiveInventoryBundle,
+      updateInventoryBundle,
+      deleteInventoryBundle,
+      listInventoryBundles,
+      listCatalogue,
+      createInvoice
+    } = await import('../services/billingService');
+
+    const rollPhoto = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=';
+
+    // Receive a new roll with a photo onto Maroon Fandy Silk (which currently has no photo)
+    const rec = await receiveInventoryBundle(
+      {
+        variantId: 'var-fandy-silk-allover-maroon',
+        quantity: 7.5,
+        bundleCode: 'BND-FSM-02',
+        supplier: 'Surat Silk House',
+        photoDataUrl: rollPhoto
+      },
+      db
+    );
+
+    // Variant and its linked CatalogueItem automatically inherit the roll photo!
+    expect(rec.variant.photoDataUrl).toBe(rollPhoto);
+    expect(rec.variant.totalQuantity).toBe(13.75); // 6.25 + 7.5
+    const catItems = await listCatalogue({}, db);
+    const maroonCat = catItems.find(
+      (c) => c.inventoryVariantId === 'var-fandy-silk-allover-maroon'
+    )!;
+    expect(maroonCat.photoDataUrl).toBe(rollPhoto);
+
+    // Edit the newly received unused roll's initialQuantity (7.5 -> 8.25) and supplier
+    const updatedRoll = await updateInventoryBundle(
+      {
+        bundleId: rec.bundle.id,
+        initialQuantity: 8.25,
+        supplier: 'Surat Royal Weaves',
+        notes: 'Recounted on arrival'
+      },
+      db
+    );
+    expect(updatedRoll.bundle.initialQuantity).toBe(8.25);
+    expect(updatedRoll.bundle.remainingQuantity).toBe(8.25);
+    expect(updatedRoll.variant.totalQuantity).toBe(14.5); // 6.25 + 8.25
+
+    // Delete the unused roll BND-FSM-02 -> succeeds because zero stock was deducted from it
+    const afterDelete = await deleteInventoryBundle(rec.bundle.id, db);
+    expect(afterDelete.variant.totalQuantity).toBe(6.25);
+
+    // Sell 2.25 m from BND-FSM-01 (leaving 4.0 m)
+    await createInvoice(
+      {
+        customerName: 'Farah Khan',
+        customerPhone: '9876509988',
+        items: [
+          {
+            catalogueItemId: 'prd-fandy-silk-maroon',
+            inventoryVariantId: 'var-fandy-silk-allover-maroon',
+            name: 'Maroon Fandy Silk — All-over Work',
+            category: 'product',
+            quantity: 2.25,
+            unit: 'm',
+            unitPricePaise: 50000
+          }
+        ]
+      },
+      db
+    );
+
+    // Attempting to delete BND-FSM-01 after a sale must be blocked to protect FIFO & invoice history
+    await expect(deleteInventoryBundle('bnd-fandy-maroon-01', db)).rejects.toThrow(
+      /Cannot delete roll/i
+    );
+
+    // Attempting to edit BND-FSM-01 initialQuantity below the 2.25 m already sold must be blocked
+    await expect(
+      updateInventoryBundle(
+        {
+          bundleId: 'bnd-fandy-maroon-01',
+          initialQuantity: 1.5
+        },
+        db
+      )
+    ).rejects.toThrow(/Cannot set roll initial quantity/i);
+
+    // Adjust stock using exact `actualRemainingQuantity: 3.5` on BND-FSM-01 (currently 4.0 m -> auto computes delta = -0.5 m)
+    const exactAdj = await adjustInventoryStock(
+      {
+        variantId: 'var-fandy-silk-allover-maroon',
+        bundleId: 'bnd-fandy-maroon-01',
+        actualRemainingQuantity: 3.5,
+        reason: 'Roll End Shortage'
+      },
+      db
+    );
+    expect(exactAdj.computedDelta).toBe(-0.5);
+    expect(exactAdj.variant.totalQuantity).toBe(3.5);
+
+    // Mark roll finished (`actualRemainingQuantity: 0`) -> sets remaining to 0
+    const finishAdj = await adjustInventoryStock(
+      {
+        variantId: 'var-fandy-silk-allover-maroon',
+        bundleId: 'bnd-fandy-maroon-01',
+        actualRemainingQuantity: 0,
+        reason: 'Roll End Shortage'
+      },
+      db
+    );
+    expect(finishAdj.computedDelta).toBe(-3.5);
+    expect(finishAdj.variant.totalQuantity).toBe(0);
+    const maroonBundles = await listInventoryBundles('var-fandy-silk-allover-maroon', db);
+    expect(maroonBundles[0].remainingQuantity).toBe(0);
+  });
+
+  it('Improvement 4 & 5: generates distinct colour swatch SVGs and atomically creates new stock variants inline on New Bill save (with full rollback on failure)', async () => {
+    const { createInvoice, listInventoryVariants, listInventoryBundles, listCatalogue } =
+      await import('../services/billingService');
+    const { generateProductPlaceholderSvg } = await import('../utils/search');
+
+    const greenSvg = generateProductPlaceholderSvg('Fandy Silk', 'All-over Work', 'Green');
+    const maroonSvg = generateProductPlaceholderSvg('Fandy Silk', 'All-over Work', 'Maroon');
+    expect(greenSvg === maroonSvg).toBe(false);
+    expect(decodeURIComponent(greenSvg)).toContain('GREEN');
+    expect(decodeURIComponent(maroonSvg)).toContain('MAROON');
+
+    // 1. Failing inline new-stock bill (billed quantity 18m > opening roll 12m) must roll back completely
+    await expect(
+      createInvoice(
+        {
+          customerName: 'Amina Begum',
+          customerPhone: '9876543299',
+          items: [
+            {
+              name: 'Peacock Blue Organza Tissue — Zari Border',
+              category: 'product',
+              quantity: 18,
+              unit: 'm',
+              unitPricePaise: 62000,
+              newStockVariantSpec: {
+                category: 'Fabric',
+                productType: 'Organza Tissue',
+                workDesign: 'Zari Border',
+                color: 'Peacock Blue',
+                unit: 'm',
+                openingStockQuantity: 12,
+                purchaseCostPaise: 41000
+              }
+            }
+          ]
+        },
+        db
+      )
+    ).rejects.toThrow(/Insufficient opening stock/i);
+
+    const varsAfterFailedSave = await listInventoryVariants({}, db);
+    expect(varsAfterFailedSave.length).toBe(8);
+
+    // 2. Valid inline new-stock bill (opening roll 15m, billed 3.25m -> leaves 11.75m in stock and creates synced CatalogueItem)
+    const savedInline = await createInvoice(
+      {
+        customerName: 'Amina Begum',
+        customerPhone: '9876543299',
+        items: [
+          {
+            name: 'Peacock Blue Organza Tissue — Zari Border',
+            category: 'product',
+            quantity: 3.25,
+            unit: 'm',
+            unitPricePaise: 62000,
+            newStockVariantSpec: {
+              category: 'Fabric',
+              productType: 'Organza Tissue',
+              workDesign: 'Zari Border',
+              color: 'Peacock Blue',
+              unit: 'm',
+              openingStockQuantity: 15,
+              purchaseCostPaise: 41000,
+              supplier: 'Varanasi Tissue Looms'
+            }
+          }
+        ],
+        advancePaise: 100000
+      },
+      db
+    );
+
+    const line0 = savedInline.invoice.items[0];
+    expect(Boolean(line0.inventoryVariantId)).toBe(true);
+    expect(Boolean(line0.catalogueItemId)).toBe(true);
+    expect(line0.stockAllocations).toHaveLength(1);
+    expect(line0.stockAllocations![0].quantityDeducted).toBe(3.25);
+
+    const varsAfterSuccess = await listInventoryVariants({}, db);
+    expect(varsAfterSuccess.length).toBe(9);
+    const createdVar = varsAfterSuccess.find((v) => v.id === line0.inventoryVariantId)!;
+    expect(createdVar.name).toBe('Peacock Blue Organza Tissue — Zari Border');
+    expect(createdVar.totalQuantity).toBe(11.75); // 15 - 3.25 deducted exactly once!
+
+    const createdBundles = await listInventoryBundles(createdVar.id, db);
+    expect(createdBundles).toHaveLength(1);
+    expect(createdBundles[0].initialQuantity).toBe(15);
+    expect(createdBundles[0].remainingQuantity).toBe(11.75);
+
+    const catAfterSuccess = await listCatalogue({}, db);
+    const createdCat = catAfterSuccess.find((c) => c.id === line0.catalogueItemId)!;
+    expect(createdCat.inventoryVariantId).toBe(createdVar.id);
+    expect(createdCat.name).toBe('Peacock Blue Organza Tissue — Zari Border');
   });
 });

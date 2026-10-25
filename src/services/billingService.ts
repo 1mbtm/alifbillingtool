@@ -18,6 +18,7 @@ import {
   Invoice,
   InvoiceLineItem,
   ItemPhotoRecord,
+  NewStockVariantSpec,
   PaymentMethod,
   PaymentRecord,
   PaymentRecordType,
@@ -34,6 +35,7 @@ import {
   formatInvoiceNumber
 } from '../utils/currency';
 import {
+  findDuplicateInventoryVariant,
   formatStockQuantity,
   getVariantStockStatus,
   searchInventoryVariants
@@ -41,6 +43,14 @@ import {
 
 const activeSubmissionLocks = new Set<string>();
 const memoryPhotoFallback = new Map<string, ItemPhotoRecord>();
+
+const GENERIC_NON_STOCK_CATALOGUE_IDS = new Set([
+  'prd-fabric',
+  'prd-lace',
+  'prd-latkan',
+  'prd-dori',
+  'cst-custom-item', 'itm-custom'
+]);
 
 /**
  * Fractional quantity helpers using integer thousandths (milli-units)
@@ -110,6 +120,76 @@ export function getTodayIsoDate(): string {
   const month = String(now.getMonth() + 1).padStart(2, '0');
   const day = String(now.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+/**
+ * Synchronizes the 1:1 linked CatalogueItem for an InventoryVariant inside an active transaction.
+ * Ensures product name, colour, work/design, productType, unit, reference price, purchase cost,
+ * photo, active status, and pin status are always kept in lockstep.
+ */
+async function syncCatalogueItemForVariantInTx(
+  variant: InventoryVariant,
+  database: ALIFBillingDatabase,
+  createIfMissing = true
+): Promise<CatalogueItem | undefined> {
+  const allCat = await database.catalogue.toArray();
+  const linkedItems = allCat.filter(
+    (c) => c.inventoryVariantId === variant.id && !GENERIC_NON_STOCK_CATALOGUE_IDS.has(c.id)
+  );
+
+  const now = variant.updatedAt || new Date().toISOString();
+  const description = `${variant.category} → ${variant.productType} → ${variant.workDesign} → ${variant.color}`;
+
+  if (linkedItems.length > 0) {
+    let primaryUpdated: CatalogueItem | undefined;
+    for (const existing of linkedItems) {
+      const updatedCat: CatalogueItem = {
+        ...existing,
+        name: variant.name,
+        category: 'product',
+        defaultPricePaise: variant.defaultSellingPricePaise,
+        costPricePaise: variant.purchaseCostPaise,
+        unit: variant.unit,
+        description,
+        isActive: variant.isActive,
+        inventoryVariantId: variant.id,
+        productType: variant.productType,
+        workDesign: variant.workDesign,
+        color: variant.color,
+        isPinned: Boolean(variant.isPinned),
+        photoId: variant.photoId,
+        photoDataUrl: variant.photoDataUrl,
+        updatedAt: now
+      };
+      await database.catalogue.put(updatedCat);
+      if (!primaryUpdated) primaryUpdated = updatedCat;
+    }
+    return primaryUpdated;
+  }
+
+  if (!createIfMissing) return undefined;
+
+  const createdCat: CatalogueItem = {
+    id: generateId('cat-prd'),
+    name: variant.name,
+    category: 'product',
+    defaultPricePaise: variant.defaultSellingPricePaise,
+    costPricePaise: variant.purchaseCostPaise,
+    unit: variant.unit,
+    description,
+    isActive: variant.isActive,
+    inventoryVariantId: variant.id,
+    productType: variant.productType,
+    workDesign: variant.workDesign,
+    color: variant.color,
+    isPinned: Boolean(variant.isPinned),
+    photoId: variant.photoId,
+    photoDataUrl: variant.photoDataUrl,
+    createdAt: variant.createdAt || now,
+    updatedAt: now
+  };
+  await database.catalogue.put(createdCat);
+  return createdCat;
 }
 
 // ============================================================================
@@ -353,14 +433,19 @@ export async function saveCatalogueItem(
       ? Math.max(0, Math.round(Number(input.maxPricePaise)))
       : undefined;
 
-  // Tailoring services never link to physical stock
+  // Tailoring services and generic material placeholders never link to physical stock
+  const isGenericId = Boolean(input.id && GENERIC_NON_STOCK_CATALOGUE_IDS.has(input.id));
   const inventoryVariantId =
-    input.category === 'service' ? null : input.inventoryVariantId ?? undefined;
+    input.category === 'service' || isGenericId
+      ? null
+      : input.inventoryVariantId ?? undefined;
 
   const now = new Date().toISOString();
+  let savedItem: CatalogueItem;
+
   if (input.id) {
     const existing = await database.catalogue.get(input.id);
-    const updated: CatalogueItem = {
+    savedItem = {
       id: input.id,
       name,
       category: input.category,
@@ -372,7 +457,11 @@ export async function saveCatalogueItem(
       description: input.description !== undefined ? input.description.trim() : existing?.description || '',
       isActive: input.isActive !== undefined ? input.isActive : existing ? existing.isActive : true,
       inventoryVariantId:
-        inventoryVariantId !== undefined ? inventoryVariantId : existing?.inventoryVariantId ?? null,
+        inventoryVariantId !== undefined
+          ? inventoryVariantId
+          : isGenericId
+          ? null
+          : existing?.inventoryVariantId ?? null,
       productType: input.productType !== undefined ? input.productType.trim() : existing?.productType,
       workDesign: input.workDesign !== undefined ? input.workDesign.trim() : existing?.workDesign,
       color: input.color !== undefined ? input.color.trim() : existing?.color,
@@ -382,33 +471,63 @@ export async function saveCatalogueItem(
       createdAt: existing ? existing.createdAt : now,
       updatedAt: now
     };
-    await database.catalogue.put(updated);
-    return updated;
+    await database.catalogue.put(savedItem);
+  } else {
+    savedItem = {
+      id: generateId('cat'),
+      name,
+      category: input.category,
+      defaultPricePaise,
+      minPricePaise,
+      maxPricePaise,
+      costPricePaise,
+      unit,
+      description: input.description?.trim() || '',
+      isActive: input.isActive !== undefined ? input.isActive : true,
+      inventoryVariantId: inventoryVariantId ?? null,
+      productType: input.productType?.trim() || undefined,
+      workDesign: input.workDesign?.trim() || undefined,
+      color: input.color?.trim() || undefined,
+      isPinned: Boolean(input.isPinned),
+      photoId: input.photoId,
+      photoDataUrl: input.photoDataUrl,
+      createdAt: now,
+      updatedAt: now
+    };
+    await database.catalogue.put(savedItem);
   }
 
-  const created: CatalogueItem = {
-    id: generateId('cat'),
-    name,
-    category: input.category,
-    defaultPricePaise,
-    minPricePaise,
-    maxPricePaise,
-    costPricePaise,
-    unit,
-    description: input.description?.trim() || '',
-    isActive: input.isActive !== undefined ? input.isActive : true,
-    inventoryVariantId: inventoryVariantId ?? null,
-    productType: input.productType?.trim() || undefined,
-    workDesign: input.workDesign?.trim() || undefined,
-    color: input.color?.trim() || undefined,
-    isPinned: Boolean(input.isPinned),
-    photoId: input.photoId,
-    photoDataUrl: input.photoDataUrl,
-    createdAt: now,
-    updatedAt: now
-  };
-  await database.catalogue.put(created);
-  return created;
+  // Keep linked InventoryVariant synchronized when edited from CatalogueView
+  if (
+    savedItem.inventoryVariantId &&
+    !GENERIC_NON_STOCK_CATALOGUE_IDS.has(savedItem.id) &&
+    canUseInventoryStores(database)
+  ) {
+    const linkedVar = await database.inventoryVariants.get(savedItem.inventoryVariantId);
+    if (linkedVar) {
+      await database.inventoryVariants.put({
+        ...linkedVar,
+        name: savedItem.name,
+        unit: savedItem.unit,
+        defaultSellingPricePaise: savedItem.defaultPricePaise,
+        purchaseCostPaise:
+          savedItem.costPricePaise !== undefined
+            ? savedItem.costPricePaise
+            : linkedVar.purchaseCostPaise,
+        productType: savedItem.productType || linkedVar.productType,
+        workDesign: savedItem.workDesign || linkedVar.workDesign,
+        color: savedItem.color || linkedVar.color,
+        isActive: savedItem.isActive,
+        isPinned: Boolean(savedItem.isPinned),
+        photoId: savedItem.photoId !== undefined ? savedItem.photoId : linkedVar.photoId,
+        photoDataUrl:
+          savedItem.photoDataUrl !== undefined ? savedItem.photoDataUrl : linkedVar.photoDataUrl,
+        updatedAt: now
+      });
+    }
+  }
+
+  return savedItem;
 }
 
 export async function toggleCatalogueItemPin(
@@ -421,12 +540,30 @@ export async function toggleCatalogueItemPin(
   if (!existing) {
     throw new Error('Catalogue item not found');
   }
+  const nextPinned = isPinned !== undefined ? isPinned : !existing.isPinned;
+  const now = new Date().toISOString();
   const updated: CatalogueItem = {
     ...existing,
-    isPinned: isPinned !== undefined ? isPinned : !existing.isPinned,
-    updatedAt: new Date().toISOString()
+    isPinned: nextPinned,
+    updatedAt: now
   };
   await database.catalogue.put(updated);
+
+  if (
+    updated.inventoryVariantId &&
+    !GENERIC_NON_STOCK_CATALOGUE_IDS.has(updated.id) &&
+    canUseInventoryStores(database)
+  ) {
+    const linkedVar = await database.inventoryVariants.get(updated.inventoryVariantId);
+    if (linkedVar) {
+      await database.inventoryVariants.put({
+        ...linkedVar,
+        isPinned: nextPinned,
+        updatedAt: now
+      });
+    }
+  }
+
   return updated;
 }
 
@@ -491,6 +628,8 @@ export async function getFrequentlyUsedItems(
     const linkedVariant = item.inventoryVariantId
       ? variantMap.get(item.inventoryVariantId)
       : undefined;
+    if (linkedVariant && !linkedVariant.isActive) continue;
+
     const catUsage = usageByCatalogueId.get(item.id) || { count: 0, qty: 0 };
     const varUsage =
       item.inventoryVariantId && usageByVariantId.get(item.inventoryVariantId)
@@ -513,7 +652,6 @@ export async function getFrequentlyUsedItems(
   }
 
   entries.sort((a, b) => {
-    // Rank items with actual invoice history or pinned status first
     if (b.invoiceUsageCount !== a.invoiceUsageCount) {
       return b.invoiceUsageCount - a.invoiceUsageCount;
     }
@@ -551,8 +689,10 @@ export interface SaveInventoryVariantInput {
   initialBundleDate?: string;
   initialBundleSupplier?: string;
   initialBundleCode?: string;
+  initialBundlePhotoId?: string;
   initialBundlePhotoDataUrl?: string;
   createLinkedCatalogueItem?: boolean;
+  receiveIntoExistingOnDuplicate?: boolean;
 }
 
 function buildSkuFromHierarchy(
@@ -595,7 +735,11 @@ async function recalculateVariantTotalInTx(
 export async function saveInventoryVariant(
   input: SaveInventoryVariantInput,
   database: ALIFBillingDatabase = defaultDb
-): Promise<{ variant: InventoryVariant; initialBundle?: InventoryBundle }> {
+): Promise<{
+  variant: InventoryVariant;
+  initialBundle?: InventoryBundle;
+  receivedIntoExisting?: boolean;
+}> {
   await database.ensureSeeded();
   const category = String(input.category || '').trim();
   const productType = String(input.productType || '').trim();
@@ -624,6 +768,107 @@ export async function saveInventoryVariant(
     database.inventoryMovements,
     database.catalogue,
     async () => {
+      const allVariants = await database.inventoryVariants.toArray();
+      const duplicate = findDuplicateInventoryVariant(allVariants, {
+        category,
+        productType,
+        workDesign,
+        color,
+        excludeId: input.id
+      });
+
+      if (duplicate) {
+        if (!input.id && input.receiveIntoExistingOnDuplicate) {
+          const initQty = roundStockQty(Number(input.initialBundleQuantity || 0));
+          let receivedBundle: InventoryBundle | undefined;
+          let updatedDuplicate: InventoryVariant = {
+            ...duplicate,
+            purchaseCostPaise:
+              purchaseCostPaise > 0 ? purchaseCostPaise : duplicate.purchaseCostPaise,
+            defaultSellingPricePaise:
+              defaultSellingPricePaise > 0
+                ? defaultSellingPricePaise
+                : duplicate.defaultSellingPricePaise,
+            photoId:
+              duplicate.photoId ||
+              input.photoId ||
+              input.initialBundlePhotoId,
+            photoDataUrl:
+              duplicate.photoDataUrl ||
+              input.photoDataUrl ||
+              input.initialBundlePhotoDataUrl,
+            isActive: true,
+            isPinned: input.isPinned !== undefined ? Boolean(input.isPinned) : duplicate.isPinned,
+            updatedAt: now
+          };
+
+          if (initQty > 0) {
+            const existingBundles = await database.inventoryBundles
+              .where('variantId')
+              .equals(duplicate.id)
+              .toArray();
+            const nextNum = String(existingBundles.length + 1).padStart(2, '0');
+            const bundleCode =
+              input.initialBundleCode?.trim() ||
+              `BND-${duplicate.color.slice(0, 3).toUpperCase()}-${nextNum}`;
+            const receivedDate = input.initialBundleDate || getTodayIsoDate();
+
+            receivedBundle = {
+              id: generateId('bnd'),
+              variantId: duplicate.id,
+              bundleCode,
+              initialQuantity: initQty,
+              remainingQuantity: initQty,
+              unit: duplicate.unit,
+              purchaseCostPaise: updatedDuplicate.purchaseCostPaise,
+              receivedDate,
+              supplier: input.initialBundleSupplier?.trim() || undefined,
+              photoId: input.initialBundlePhotoId || input.photoId,
+              photoDataUrl: input.initialBundlePhotoDataUrl || input.photoDataUrl,
+              notes: input.notes?.trim() || 'Received into existing variant',
+              createdAt: now,
+              updatedAt: now
+            };
+            await database.inventoryBundles.put(receivedBundle);
+
+            const newTotal = await recalculateVariantTotalInTx(duplicate.id, database);
+            updatedDuplicate = {
+              ...updatedDuplicate,
+              totalQuantity: newTotal
+            };
+
+            const movement: InventoryMovement = {
+              id: generateId('mov'),
+              variantId: duplicate.id,
+              bundleId: receivedBundle.id,
+              bundleCode: receivedBundle.bundleCode,
+              type: 'receive',
+              quantityDelta: initQty,
+              balanceAfter: newTotal,
+              unit: duplicate.unit,
+              reason: `Received stock into existing variant (${bundleCode})`,
+              date: receivedDate,
+              createdAt: now
+            };
+            await database.inventoryMovements.put(movement);
+          }
+
+          await database.inventoryVariants.put(updatedDuplicate);
+          await syncCatalogueItemForVariantInTx(updatedDuplicate, database, true);
+          return {
+            variant: updatedDuplicate,
+            initialBundle: receivedBundle,
+            receivedIntoExisting: true
+          };
+        }
+
+        const dupErr = new Error(
+          `Duplicate variant already exists: "${duplicate.name}" (${duplicate.sku}). Receive new stock into the existing variant instead.`
+        );
+        (dupErr as any).duplicateVariant = duplicate;
+        throw dupErr;
+      }
+
       let variant: InventoryVariant;
       let initialBundle: InventoryBundle | undefined;
 
@@ -632,6 +877,15 @@ export async function saveInventoryVariant(
         if (!existing) {
           throw new Error('Inventory variant not found');
         }
+        const resolvedPhotoDataUrl =
+          input.photoDataUrl !== undefined
+            ? input.photoDataUrl || undefined
+            : existing.photoDataUrl || input.initialBundlePhotoDataUrl || undefined;
+        const resolvedPhotoId =
+          input.photoId !== undefined
+            ? input.photoId || undefined
+            : existing.photoId || input.initialBundlePhotoId || undefined;
+
         variant = {
           ...existing,
           sku: input.sku?.trim() || existing.sku,
@@ -644,9 +898,8 @@ export async function saveInventoryVariant(
           purchaseCostPaise,
           defaultSellingPricePaise,
           lowStockThreshold,
-          photoId: input.photoId !== undefined ? input.photoId : existing.photoId,
-          photoDataUrl:
-            input.photoDataUrl !== undefined ? input.photoDataUrl : existing.photoDataUrl,
+          photoId: resolvedPhotoId,
+          photoDataUrl: resolvedPhotoDataUrl,
           notes: input.notes !== undefined ? input.notes.trim() : existing.notes,
           isActive: input.isActive !== undefined ? input.isActive : existing.isActive,
           isPinned: input.isPinned !== undefined ? input.isPinned : existing.isPinned,
@@ -655,6 +908,11 @@ export async function saveInventoryVariant(
         await database.inventoryVariants.put(variant);
         const syncedTotal = await recalculateVariantTotalInTx(variant.id, database);
         variant.totalQuantity = syncedTotal;
+        await syncCatalogueItemForVariantInTx(
+          variant,
+          database,
+          input.createLinkedCatalogueItem !== false
+        );
       } else {
         const variantId = generateId('var');
         const sku =
@@ -666,6 +924,12 @@ export async function saveInventoryVariant(
         if (initQty < 0) {
           throw new Error('Initial stock quantity cannot be negative');
         }
+
+        // Inherit roll photo if variant has no main photo yet
+        const inheritedPhotoDataUrl =
+          input.photoDataUrl || input.initialBundlePhotoDataUrl || undefined;
+        const inheritedPhotoId =
+          input.photoId || input.initialBundlePhotoId || undefined;
 
         variant = {
           id: variantId,
@@ -680,8 +944,8 @@ export async function saveInventoryVariant(
           defaultSellingPricePaise,
           lowStockThreshold,
           totalQuantity: initQty,
-          photoId: input.photoId,
-          photoDataUrl: input.photoDataUrl,
+          photoId: inheritedPhotoId,
+          photoDataUrl: inheritedPhotoDataUrl,
           notes: input.notes?.trim() || '',
           isActive: input.isActive !== undefined ? input.isActive : true,
           isPinned: Boolean(input.isPinned),
@@ -705,7 +969,8 @@ export async function saveInventoryVariant(
             purchaseCostPaise,
             receivedDate,
             supplier: input.initialBundleSupplier?.trim() || undefined,
-            photoDataUrl: input.initialBundlePhotoDataUrl,
+            photoId: input.initialBundlePhotoId || input.photoId,
+            photoDataUrl: input.initialBundlePhotoDataUrl || input.photoDataUrl,
             notes: 'Initial opening bundle',
             createdAt: now,
             updatedAt: now
@@ -728,31 +993,13 @@ export async function saveInventoryVariant(
           await database.inventoryMovements.put(movement);
         }
 
-        // Automatically create or link a CatalogueItem so it appears in New Bill & Catalogue
+        // Automatically create or sync a 1:1 CatalogueItem so it appears in New Bill & Catalogue
         if (input.createLinkedCatalogueItem !== false) {
-          const catItem: CatalogueItem = {
-            id: generateId('cat-prd'),
-            name: variant.name,
-            category: 'product',
-            defaultPricePaise: defaultSellingPricePaise,
-            costPricePaise: purchaseCostPaise,
-            unit,
-            description: `${category} → ${productType} → ${workDesign} → ${color}`,
-            isActive: true,
-            inventoryVariantId: variant.id,
-            productType,
-            workDesign,
-            color,
-            isPinned: Boolean(input.isPinned),
-            photoDataUrl: input.photoDataUrl,
-            createdAt: now,
-            updatedAt: now
-          };
-          await database.catalogue.put(catItem);
+          await syncCatalogueItemForVariantInTx(variant, database, true);
         }
       }
 
-      return { variant, initialBundle };
+      return { variant, initialBundle, receivedIntoExisting: false };
     }
   );
 }
@@ -784,6 +1031,7 @@ export async function receiveInventoryBundle(
     database.inventoryVariants,
     database.inventoryBundles,
     database.inventoryMovements,
+    database.catalogue,
     async () => {
       const variant = await database.inventoryVariants.get(input.variantId);
       if (!variant) {
@@ -824,13 +1072,20 @@ export async function receiveInventoryBundle(
       await database.inventoryBundles.put(bundle);
 
       const newTotal = await recalculateVariantTotalInTx(variant.id, database);
+      // Automatically inherit roll photo as the variant's main photo if variant has none yet
+      const inheritedPhotoDataUrl = variant.photoDataUrl || input.photoDataUrl || undefined;
+      const inheritedPhotoId = variant.photoId || input.photoId || undefined;
+
       const updatedVariant: InventoryVariant = {
         ...variant,
         totalQuantity: newTotal,
         purchaseCostPaise,
+        photoId: inheritedPhotoId,
+        photoDataUrl: inheritedPhotoDataUrl,
         updatedAt: now
       };
       await database.inventoryVariants.put(updatedVariant);
+      await syncCatalogueItemForVariantInTx(updatedVariant, database, true);
 
       const movement: InventoryMovement = {
         id: generateId('mov'),
@@ -854,10 +1109,239 @@ export async function receiveInventoryBundle(
   );
 }
 
+export interface UpdateInventoryBundleInput {
+  bundleId: string;
+  bundleCode?: string;
+  initialQuantity?: number;
+  purchaseCostPaise?: number;
+  receivedDate?: string;
+  supplier?: string;
+  notes?: string;
+  photoId?: string | null;
+  photoDataUrl?: string | null;
+  adjustmentReason?: string;
+}
+
+/**
+ * Safely updates an individual roll/bundle's metadata and initial quantity.
+ * Prevents reducing `initialQuantity` below the quantity already sold/deducted from this roll,
+ * preserves FIFO integrity, and logs an audit movement if quantity changed.
+ */
+export async function updateInventoryBundle(
+  input: UpdateInventoryBundleInput,
+  database: ALIFBillingDatabase = defaultDb
+): Promise<{
+  variant: InventoryVariant;
+  bundle: InventoryBundle;
+  movement?: InventoryMovement;
+}> {
+  await database.ensureSeeded();
+  if (!input.bundleId) {
+    throw new Error('Bundle ID is required');
+  }
+
+  return await database.transaction(
+    'rw',
+    database.inventoryVariants,
+    database.inventoryBundles,
+    database.inventoryMovements,
+    database.catalogue,
+    async () => {
+      const existing = await database.inventoryBundles.get(input.bundleId);
+      if (!existing) {
+        throw new Error('Roll / bundle not found');
+      }
+      const variant = await database.inventoryVariants.get(existing.variantId);
+      if (!variant) {
+        throw new Error('Parent inventory variant not found');
+      }
+
+      const alreadyDeductedMilli = Math.max(
+        0,
+        toQtyUnits(existing.initialQuantity) - toQtyUnits(existing.remainingQuantity)
+      );
+      const alreadyDeducted = fromQtyUnits(alreadyDeductedMilli);
+
+      let newInitial = existing.initialQuantity;
+      let newRemaining = existing.remainingQuantity;
+      let deltaQty = 0;
+
+      if (input.initialQuantity !== undefined) {
+        const candidateInit = roundStockQty(Number(input.initialQuantity));
+        if (!Number.isFinite(candidateInit) || candidateInit <= 0) {
+          throw new Error('Roll initial quantity must be greater than zero');
+        }
+        if (toQtyUnits(candidateInit) < alreadyDeductedMilli) {
+          throw new Error(
+            `Cannot set roll initial quantity to ${formatStockQuantity(
+              candidateInit,
+              existing.unit
+            )} because ${formatStockQuantity(
+              alreadyDeducted,
+              existing.unit
+            )} has already been sold/deducted from ${existing.bundleCode}.`
+          );
+        }
+        const diffMilli = toQtyUnits(candidateInit) - toQtyUnits(existing.initialQuantity);
+        deltaQty = fromQtyUnits(diffMilli);
+        newInitial = candidateInit;
+        newRemaining = fromQtyUnits(Math.max(0, toQtyUnits(existing.remainingQuantity) + diffMilli));
+      }
+
+      const now = new Date().toISOString();
+      const nextPhotoDataUrl =
+        input.photoDataUrl === null
+          ? undefined
+          : input.photoDataUrl !== undefined
+          ? input.photoDataUrl
+          : existing.photoDataUrl;
+      const nextPhotoId =
+        input.photoId === null
+          ? undefined
+          : input.photoId !== undefined
+          ? input.photoId
+          : existing.photoId;
+
+      const updatedBundle: InventoryBundle = {
+        ...existing,
+        bundleCode: input.bundleCode?.trim() || existing.bundleCode,
+        initialQuantity: newInitial,
+        remainingQuantity: newRemaining,
+        purchaseCostPaise:
+          input.purchaseCostPaise !== undefined
+            ? Math.max(0, Math.round(Number(input.purchaseCostPaise)))
+            : existing.purchaseCostPaise,
+        receivedDate: input.receivedDate?.trim() || existing.receivedDate,
+        supplier:
+          input.supplier !== undefined
+            ? input.supplier.trim() || undefined
+            : existing.supplier,
+        notes:
+          input.notes !== undefined
+            ? input.notes.trim() || undefined
+            : existing.notes,
+        photoId: nextPhotoId,
+        photoDataUrl: nextPhotoDataUrl,
+        updatedAt: now
+      };
+      await database.inventoryBundles.put(updatedBundle);
+
+      const newTotal = await recalculateVariantTotalInTx(variant.id, database);
+      let updatedVariant = (await database.inventoryVariants.get(variant.id))!;
+
+      // Inherit roll photo onto variant if variant still has no photo
+      if (nextPhotoDataUrl && !updatedVariant.photoDataUrl) {
+        updatedVariant = {
+          ...updatedVariant,
+          photoId: nextPhotoId || updatedVariant.photoId,
+          photoDataUrl: nextPhotoDataUrl,
+          updatedAt: now
+        };
+        await database.inventoryVariants.put(updatedVariant);
+        await syncCatalogueItemForVariantInTx(updatedVariant, database, true);
+      }
+
+      let movement: InventoryMovement | undefined;
+      if (deltaQty !== 0) {
+        movement = {
+          id: generateId('mov'),
+          variantId: variant.id,
+          bundleId: updatedBundle.id,
+          bundleCode: updatedBundle.bundleCode,
+          type: 'adjustment',
+          quantityDelta: deltaQty,
+          balanceAfter: newTotal,
+          unit: variant.unit,
+          reason:
+            input.adjustmentReason?.trim() ||
+            `Data Entry Correction: updated initial roll qty for ${updatedBundle.bundleCode}`,
+          date: getTodayIsoDate(),
+          createdAt: now
+        };
+        await database.inventoryMovements.put(movement);
+      }
+
+      return { variant: updatedVariant, bundle: updatedBundle, movement };
+    }
+  );
+}
+
+/**
+ * Safely deletes a mistakenly created roll/bundle ONLY when zero stock has been deducted/sold from it.
+ * If any invoice or deduction has already used this roll, blocks deletion and guides the user to Adjust Stock.
+ */
+export async function deleteInventoryBundle(
+  bundleId: string,
+  database: ALIFBillingDatabase = defaultDb
+): Promise<{ variant: InventoryVariant; deletedBundleId: string }> {
+  await database.ensureSeeded();
+  if (!bundleId) {
+    throw new Error('Bundle ID is required');
+  }
+
+  return await database.transaction(
+    'rw',
+    database.inventoryVariants,
+    database.inventoryBundles,
+    database.inventoryMovements,
+    async () => {
+      const bundle = await database.inventoryBundles.get(bundleId);
+      if (!bundle) {
+        throw new Error('Roll / bundle not found');
+      }
+
+      const variant = await database.inventoryVariants.get(bundle.variantId);
+      if (!variant) {
+        throw new Error('Parent inventory variant not found');
+      }
+
+      const bundleMovements = await database.inventoryMovements
+        .where('bundleId')
+        .equals(bundleId)
+        .toArray();
+      const hasSaleOrInvoiceAllocations = bundleMovements.some(
+        (m) => m.type === 'sale' || m.type === 'edit_reconcile' || Boolean(m.invoiceId)
+      );
+      const hasBeenUsed =
+        toQtyUnits(bundle.remainingQuantity) !== toQtyUnits(bundle.initialQuantity) ||
+        hasSaleOrInvoiceAllocations;
+
+      if (hasBeenUsed) {
+        throw new Error(
+          `Cannot delete roll ${bundle.bundleCode} because stock from this roll has already been sold or adjusted. Use Adjust Stock to set remaining quantity to 0 instead.`
+        );
+      }
+
+      await database.inventoryBundles.delete(bundleId);
+      const newTotal = await recalculateVariantTotalInTx(variant.id, database);
+      const updatedVariant = (await database.inventoryVariants.get(variant.id))!;
+
+      const now = new Date().toISOString();
+      const reversalMovement: InventoryMovement = {
+        id: generateId('mov'),
+        variantId: variant.id,
+        bundleId: bundle.id,
+        bundleCode: bundle.bundleCode,
+        type: 'adjustment',
+        quantityDelta: -bundle.initialQuantity,
+        balanceAfter: newTotal,
+        unit: variant.unit,
+        reason: `Removed unused roll ${bundle.bundleCode} (Data Entry Correction)`,
+        date: getTodayIsoDate(),
+        createdAt: now
+      };
+      await database.inventoryMovements.put(reversalMovement);
+
+      return { variant: updatedVariant, deletedBundleId: bundleId };
+    }
+  );
+}
+
 export interface AdjustInventoryStockInput {
   variantId: string;
   bundleId?: string;
-  quantityDelta: number; // Positive to add, negative to deduct (e.g. damage, shrinkage, measurement correction)
+  quantityDelta?: number; // Positive to add, negative to deduct
+  actualRemainingQuantity?: number; // Alternative: enter exact remaining quantity (including 0) and auto-compute delta
   reason: string;
   date?: string;
 }
@@ -865,12 +1349,8 @@ export interface AdjustInventoryStockInput {
 export async function adjustInventoryStock(
   input: AdjustInventoryStockInput,
   database: ALIFBillingDatabase = defaultDb
-): Promise<{ variant: InventoryVariant; movement: InventoryMovement }> {
+): Promise<{ variant: InventoryVariant; movement: InventoryMovement; computedDelta: number }> {
   await database.ensureSeeded();
-  const delta = roundStockQty(Number(input.quantityDelta));
-  if (!Number.isFinite(delta) || delta === 0) {
-    throw new Error('Adjustment quantity must be a non-zero number');
-  }
   const cleanReason = String(input.reason || '').trim();
   if (!cleanReason) {
     throw new Error('A reason is required for manual stock adjustments');
@@ -890,6 +1370,40 @@ export async function adjustInventoryStock(
       const bundles = await listInventoryBundlesInTx(variant.id, database);
       const now = new Date().toISOString();
       const date = input.date || getTodayIsoDate();
+
+      let delta: number;
+      let reasonWithDetail = cleanReason;
+
+      if (input.actualRemainingQuantity !== undefined && input.actualRemainingQuantity !== null) {
+        const targetActual = roundStockQty(Number(input.actualRemainingQuantity));
+        if (!Number.isFinite(targetActual) || targetActual < 0) {
+          throw new Error('Actual remaining quantity must be zero or greater');
+        }
+        let currentBasis = variant.totalQuantity;
+        if (input.bundleId) {
+          const targetBundle = bundles.find((b) => b.id === input.bundleId);
+          if (!targetBundle) {
+            throw new Error('Selected bundle/roll not found');
+          }
+          currentBasis = targetBundle.remainingQuantity;
+        }
+        delta = fromQtyUnits(toQtyUnits(targetActual) - toQtyUnits(currentBasis));
+        if (delta === 0) {
+          throw new Error(
+            `Actual remaining quantity is already ${formatStockQuantity(targetActual, variant.unit)}`
+          );
+        }
+        reasonWithDetail = `${cleanReason} (Set remaining: ${formatStockQuantity(
+          currentBasis,
+          variant.unit
+        )} → ${formatStockQuantity(targetActual, variant.unit)})`;
+      } else {
+        delta = roundStockQty(Number(input.quantityDelta));
+        if (!Number.isFinite(delta) || delta === 0) {
+          throw new Error('Adjustment quantity must be a non-zero number');
+        }
+      }
+
       let affectedBundleCode: string | undefined;
       let affectedBundleId: string | undefined;
 
@@ -986,7 +1500,7 @@ export async function adjustInventoryStock(
             unit: variant.unit,
             purchaseCostPaise: variant.purchaseCostPaise,
             receivedDate: date,
-            notes: cleanReason,
+            notes: reasonWithDetail,
             createdAt: now,
             updatedAt: now
           };
@@ -1008,13 +1522,13 @@ export async function adjustInventoryStock(
         quantityDelta: delta,
         balanceAfter: newTotal,
         unit: variant.unit,
-        reason: cleanReason,
+        reason: reasonWithDetail,
         date,
         createdAt: now
       };
       await database.inventoryMovements.put(movement);
 
-      return { variant: updatedVariant, movement };
+      return { variant: updatedVariant, movement, computedDelta: delta };
     }
   );
 }
@@ -1144,7 +1658,11 @@ async function deductLineItemsFIFOInTx(
     }
 
     let resolvedVariantId = item.inventoryVariantId ?? null;
-    if (!resolvedVariantId && item.catalogueItemId) {
+    if (
+      !resolvedVariantId &&
+      item.catalogueItemId &&
+      !GENERIC_NON_STOCK_CATALOGUE_IDS.has(item.catalogueItemId)
+    ) {
       const catItem = await database.catalogue.get(item.catalogueItemId);
       if (catItem?.inventoryVariantId) {
         resolvedVariantId = catItem.inventoryVariantId;
@@ -1360,6 +1878,7 @@ export interface CreateInvoiceLineInput {
   costPricePaise?: number;
   notes?: string;
   photoId?: string;
+  newStockVariantSpec?: NewStockVariantSpec;
 }
 
 export interface CreateInvoiceInput {
@@ -1417,29 +1936,46 @@ export async function createInvoice(
       throw new Error('At least one tailoring service or product item is required');
     }
 
+    const rawSpecsByLineId = new Map<string, NewStockVariantSpec>();
+
     const normalizedItems: InvoiceLineItem[] = input.items.map((raw, idx) => {
-      const itemName = String(raw.name || '').trim();
+      const lineId = raw.id || generateId(`line-${idx + 1}`);
+      const spec = raw.newStockVariantSpec;
+      const fallbackName = spec
+        ? `${String(spec.color || '').trim()} ${String(spec.productType || '').trim()} — ${
+            String(spec.workDesign || '').trim() || 'Standard'
+          }`.trim()
+        : '';
+      const itemName = String(raw.name || fallbackName || '').trim();
       if (!itemName) {
         throw new Error(`Line item #${idx + 1} requires a name`);
       }
       const qty = roundStockQty(Number(raw.quantity));
       const unitPaise = Math.round(Number(raw.unitPricePaise));
       const lineTotalPaise = calculateLineTotalPaise(qty, unitPaise);
+      if (spec) {
+        rawSpecsByLineId.set(lineId, spec);
+      }
       return {
-        id: raw.id || generateId(`line-${idx + 1}`),
+        id: lineId,
         catalogueItemId: raw.catalogueItemId ?? null,
         inventoryVariantId:
           raw.category === 'service' || raw.isNonStock ? null : raw.inventoryVariantId ?? undefined,
-        isNonStock: Boolean(raw.isNonStock),
+        isNonStock: spec ? false : Boolean(raw.isNonStock),
         name: itemName,
-        category: raw.category || 'service',
+        category: spec ? 'product' : raw.category || 'service',
         quantity: qty,
-        unit: String(raw.unit || 'pc').trim() || 'pc',
+        unit: String(spec?.unit || raw.unit || 'pc').trim() || 'pc',
         unitPricePaise: unitPaise,
-        costPricePaise: raw.costPricePaise !== undefined ? Math.round(raw.costPricePaise) : undefined,
+        costPricePaise:
+          raw.costPricePaise !== undefined
+            ? Math.round(raw.costPricePaise)
+            : spec?.purchaseCostPaise !== undefined
+            ? Math.round(spec.purchaseCostPaise)
+            : undefined,
         lineTotalPaise,
         notes: raw.notes ? String(raw.notes).trim() : undefined,
-        photoId: raw.photoId || undefined
+        photoId: raw.photoId || spec?.photoId || undefined
       };
     });
 
@@ -1502,7 +2038,151 @@ export async function createInvoice(
 
         const invoiceId = generateId('inv');
 
-        // Perform FIFO stock deduction ONLY inside this atomic save transaction.
+        // Step A: If any line item carries an inline `newStockVariantSpec`, atomically create
+        // its InventoryVariant, opening InventoryBundle, receive movement, and synced CatalogueItem
+        // BEFORE running FIFO deduction. If any validation or stock check fails, the entire transaction rolls back!
+        if (rawSpecsByLineId.size > 0 && canUseInventoryStores(database)) {
+          const currentVariants = await database.inventoryVariants.toArray();
+          for (const lineItem of normalizedItems) {
+            const spec = rawSpecsByLineId.get(lineItem.id);
+            if (!spec) continue;
+
+            const vCategory = String(spec.category || 'Fabric').trim() || 'Fabric';
+            const vProductType = String(spec.productType || '').trim();
+            const vWorkDesign = String(spec.workDesign || 'Standard').trim() || 'Standard';
+            const vColor = String(spec.color || '').trim();
+            const vUnit = String(spec.unit || lineItem.unit || 'm').trim() || 'm';
+            const openingQty = roundStockQty(Number(spec.openingStockQuantity || 0));
+
+            if (!vProductType) {
+              throw new Error(`New stock item "${lineItem.name}" requires a Product Type.`);
+            }
+            if (!vColor) {
+              throw new Error(`New stock item "${lineItem.name}" requires a Colour.`);
+            }
+            if (!Number.isFinite(openingQty) || openingQty <= 0) {
+              throw new Error(
+                `New stock item "${lineItem.name}" requires an opening roll stock quantity greater than 0.`
+              );
+            }
+            if (toQtyUnits(openingQty) < toQtyUnits(lineItem.quantity)) {
+              throw new Error(
+                `Insufficient opening stock for "${lineItem.name}": opening stock is ${formatStockQuantity(
+                  openingQty,
+                  vUnit
+                )}, but bill requires ${formatStockQuantity(lineItem.quantity, vUnit)}.`
+              );
+            }
+
+            const existingDup = findDuplicateInventoryVariant(currentVariants, {
+              category: vCategory,
+              productType: vProductType,
+              workDesign: vWorkDesign,
+              color: vColor
+            });
+            if (existingDup) {
+              throw new Error(
+                `Duplicate variant already exists: "${existingDup.name}". Please select the existing variant instead of creating a duplicate.`
+              );
+            }
+
+            const variantId = generateId('var');
+            const sku = `${buildSkuFromHierarchy(
+              vCategory,
+              vProductType,
+              vWorkDesign,
+              vColor
+            )}-${Math.floor(100 + Math.random() * 900)}`;
+            const variantName = `${vColor} ${vProductType} — ${vWorkDesign}`;
+            const purchaseCostPaise = Math.max(
+              0,
+              Math.round(Number(spec.purchaseCostPaise ?? lineItem.costPricePaise ?? 0))
+            );
+            const defaultSellingPricePaise = Math.max(
+              0,
+              Math.round(Number(spec.defaultSellingPricePaise ?? lineItem.unitPricePaise ?? 0))
+            );
+            const lowStockThreshold = Math.max(
+              0,
+              roundStockQty(Number(spec.lowStockThreshold ?? 3))
+            );
+            const recDate = spec.receivedDate || invoiceDate;
+            const bundleCode =
+              spec.bundleCode?.trim() ||
+              `BND-${sku.split('-').slice(0, 2).join('')}-01`;
+
+            const newVariant: InventoryVariant = {
+              id: variantId,
+              sku,
+              name: variantName,
+              category: vCategory,
+              productType: vProductType,
+              workDesign: vWorkDesign,
+              color: vColor,
+              unit: vUnit,
+              purchaseCostPaise,
+              defaultSellingPricePaise,
+              lowStockThreshold,
+              totalQuantity: openingQty,
+              photoId: spec.photoId || lineItem.photoId,
+              photoDataUrl: spec.photoDataUrl,
+              notes: spec.notes?.trim() || `Created inline on Bill ${invoiceNumber}`,
+              isActive: true,
+              isPinned: false,
+              createdAt: now,
+              updatedAt: now
+            };
+            await database.inventoryVariants.put(newVariant);
+            currentVariants.push(newVariant);
+
+            const openingBundle: InventoryBundle = {
+              id: generateId('bnd'),
+              variantId: newVariant.id,
+              bundleCode,
+              initialQuantity: openingQty,
+              remainingQuantity: openingQty,
+              unit: vUnit,
+              purchaseCostPaise,
+              receivedDate: recDate,
+              supplier: spec.supplier?.trim() || undefined,
+              photoId: spec.photoId || lineItem.photoId,
+              photoDataUrl: spec.photoDataUrl,
+              notes: `Opening stock received on Bill ${invoiceNumber}`,
+              createdAt: now,
+              updatedAt: now
+            };
+            await database.inventoryBundles.put(openingBundle);
+
+            const receiveMov: InventoryMovement = {
+              id: generateId('mov'),
+              variantId: newVariant.id,
+              bundleId: openingBundle.id,
+              bundleCode: openingBundle.bundleCode,
+              type: 'receive',
+              quantityDelta: openingQty,
+              balanceAfter: openingQty,
+              unit: vUnit,
+              reason: `Opening stock received inline on Bill ${invoiceNumber} (${bundleCode})`,
+              invoiceId,
+              invoiceNumber,
+              lineItemId: lineItem.id,
+              date: recDate,
+              createdAt: now
+            };
+            await database.inventoryMovements.put(receiveMov);
+
+            const syncedCat = await syncCatalogueItemForVariantInTx(newVariant, database, true);
+
+            lineItem.inventoryVariantId = newVariant.id;
+            lineItem.catalogueItemId = syncedCat ? syncedCat.id : null;
+            lineItem.isNonStock = false;
+            lineItem.name = newVariant.name;
+            lineItem.unit = vUnit;
+            lineItem.costPricePaise = purchaseCostPaise;
+          }
+        }
+
+        // Step B: Perform FIFO stock deduction ONLY inside this atomic save transaction.
         // If any stock-linked item has insufficient stock, this throws and rolls back the entire transaction!
         const itemsWithAllocations = await deductLineItemsFIFOInTx(
           normalizedItems,
@@ -2250,7 +2930,8 @@ export async function exportBackupPayload(
     payments,
     inventoryVariants,
     inventoryBundles,
-    inventoryMovements
+    inventoryMovements,
+    rawPhotos
   ] = await Promise.all([
     database.settings.toArray(),
     database.customers.toArray(),
@@ -2259,8 +2940,21 @@ export async function exportBackupPayload(
     database.payments.toArray(),
     canUseInventoryStores(database) ? database.inventoryVariants.toArray() : Promise.resolve([]),
     canUseInventoryStores(database) ? database.inventoryBundles.toArray() : Promise.resolve([]),
-    canUseInventoryStores(database) ? database.inventoryMovements.toArray() : Promise.resolve([])
+    canUseInventoryStores(database) ? database.inventoryMovements.toArray() : Promise.resolve([]),
+    canUseItemPhotosStore(database) ? database.itemPhotos.toArray() : Promise.resolve([])
   ]);
+
+  const serializedPhotos = rawPhotos.map((p) => ({
+    id: p.id,
+    invoiceId: p.invoiceId,
+    lineItemId: p.lineItemId,
+    dataUrl: p.dataUrl,
+    mimeType: p.mimeType,
+    width: p.width,
+    height: p.height,
+    sizeBytes: p.sizeBytes,
+    createdAt: p.createdAt
+  }));
 
   return {
     schemaVersion: 4,
@@ -2273,7 +2967,8 @@ export async function exportBackupPayload(
     payments,
     inventoryVariants,
     inventoryBundles,
-    inventoryMovements
+    inventoryMovements,
+    itemPhotos: serializedPhotos
   };
 }
 
@@ -2431,6 +3126,9 @@ export async function restoreBackupPayload(
       database.inventoryMovements
     );
   }
+  if (canUseItemPhotosStore(database)) {
+    restoreTables.push(database.itemPhotos);
+  }
 
   return await database.transaction('rw', ...(restoreTables as [any, ...any[]]), async () => {
     await database.settings.clear();
@@ -2488,6 +3186,17 @@ export async function restoreBackupPayload(
       }
     }
 
+    if (canUseItemPhotosStore(database)) {
+      await database.itemPhotos.clear();
+      if (payload.itemPhotos && payload.itemPhotos.length > 0) {
+        const hydratedPhotos: ItemPhotoRecord[] = payload.itemPhotos.map((p) => ({
+          ...p,
+          blob: p.dataUrl ? dataUrlToBlob(p.dataUrl) : undefined
+        }));
+        await database.itemPhotos.bulkPut(hydratedPhotos);
+      }
+    }
+
     return {
       customers: payload.customers.length,
       catalogue: payload.catalogue.length,
@@ -2499,7 +3208,7 @@ export async function restoreBackupPayload(
 }
 
 // ============================================================================
-// 9. ITEM PHOTO PROCESSING & INDEXEDDB BLOB STORAGE
+// 9. ITEM PHOTO PROCESSING & INDEXEDDB BLOB STORAGE (WITH DEDUPLICATION)
 // ============================================================================
 
 const MAX_RAW_FILE_BYTES = 15 * 1024 * 1024; // 15 MB raw upload ceiling

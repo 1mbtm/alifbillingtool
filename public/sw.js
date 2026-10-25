@@ -1,7 +1,9 @@
-const CACHE_NAME = 'alif-billing-shell-v3';
+const CACHE_NAME = 'alif-billing-shell-v4';
 const APP_SHELL_ASSETS = [
   './',
+  './index.html',
   './manifest.webmanifest',
+  './site.webmanifest',
   './favicon.ico',
   './favicon-32x32.png',
   './favicon-16x16.png',
@@ -9,38 +11,45 @@ const APP_SHELL_ASSETS = [
   './android-chrome-192x192.png',
   './android-chrome-512x512.png',
   './icons/icon-192.png',
-  './icons/icon-512.png'
+  './icons/icon-512.png',
+  './icons/icon-maskable-192.png',
+  './icons/icon-maskable-512.png',
+  './icons/icon-192.svg',
+  './icons/icon-512.svg'
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(CACHE_NAME)
-      .then((cache) => {
-        return Promise.allSettled(
+      .then((cache) =>
+        Promise.allSettled(
           APP_SHELL_ASSETS.map((asset) =>
             cache.add(asset).catch((err) => {
               console.warn('[SW] Could not pre-cache asset:', asset, err);
             })
           )
-        );
-      })
+        )
+      )
       .then(() => self.skipWaiting())
   );
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys.map((key) => {
-          if (key !== CACHE_NAME) {
-            return caches.delete(key);
-          }
-          return Promise.resolve();
-        })
+    caches
+      .keys()
+      .then((keys) =>
+        Promise.all(
+          keys.map((key) => {
+            if (key !== CACHE_NAME) {
+              return caches.delete(key);
+            }
+            return Promise.resolve();
+          })
+        )
       )
-    ).then(() => self.clients.claim())
+      .then(() => self.clients.claim())
   );
 });
 
@@ -54,7 +63,6 @@ self.addEventListener('fetch', (event) => {
   event.respondWith(
     caches.match(request).then((cachedResponse) => {
       if (cachedResponse) {
-        // Refresh cache in background when online
         fetch(request)
           .then((networkResponse) => {
             if (networkResponse && networkResponse.status === 200) {

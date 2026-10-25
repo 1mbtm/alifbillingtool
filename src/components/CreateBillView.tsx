@@ -6,6 +6,7 @@ import {
   DiscountType,
   InventoryVariant,
   Invoice,
+  NewStockVariantSpec,
   PaymentMethod,
   ShopSettings
 } from '../types/billing';
@@ -19,26 +20,29 @@ import {
 } from '../utils/currency';
 import {
   extractInventoryHierarchy,
+  findDuplicateInventoryVariant,
   findNextBlankBillingField,
   focusAndScrollElementByTestId,
   formatStockQuantity,
   generateProductPlaceholderSvg,
   getVariantStockStatus,
   normalizeCustomerPhoneDigits,
+  resolveColorSwatchHex,
   searchCatalogueItems
 } from '../utils/search';
 import {
+  compressAndResizeImage,
   createInvoice,
   deleteItemPhoto,
   FrequentlyUsedEntry,
+  fromQtyUnits,
   generateId,
   getFrequentlyUsedItems,
   getTodayIsoDate,
   previewNextInvoiceNumber,
   roundStockQty,
   saveItemPhotoFromFile,
-  toQtyUnits,
-  fromQtyUnits
+  toQtyUnits
 } from '../services/billingService';
 import { StatusBadge } from './StatusBadge';
 
@@ -58,6 +62,7 @@ interface DraftLineItem {
   notes: string;
   photoId?: string;
   photoDataUrl?: string;
+  newStockVariantSpec?: NewStockVariantSpec;
 }
 
 interface CreateBillViewProps {
@@ -138,6 +143,20 @@ export function CreateBillView({
   const [hierWorkDesign, setHierWorkDesign] = useState('');
   const [hierColor, setHierColor] = useState('');
 
+  // Improvement 5: Inline "+ New Stock Item" state for creating new stock variants directly from New Bill
+  const [showInlineNewStock, setShowInlineNewStock] = useState<boolean>(false);
+  const [newStockCategory, setNewStockCategory] = useState<string>('Fabric');
+  const [newStockProductType, setNewStockProductType] = useState<string>('');
+  const [newStockWorkDesign, setNewStockWorkDesign] = useState<string>('');
+  const [newStockColor, setNewStockColor] = useState<string>('');
+  const [newStockUnit, setNewStockUnit] = useState<string>('m');
+  const [newStockOpeningQty, setNewStockOpeningQty] = useState<string>('');
+  const [newStockSoldQty, setNewStockSoldQty] = useState<string>('');
+  const [newStockSellingPrice, setNewStockSellingPrice] = useState<string>('');
+  const [newStockPurchaseCost, setNewStockPurchaseCost] = useState<string>('');
+  const [newStockSupplier, setNewStockSupplier] = useState<string>('');
+  const [newStockPhotoDataUrl, setNewStockPhotoDataUrl] = useState<string>('');
+
   const [frequentlyUsed, setFrequentlyUsed] = useState<FrequentlyUsedEntry[]>([]);
 
   const [lines, setLines] = useState<DraftLineItem[]>([]);
@@ -184,6 +203,24 @@ export function CreateBillView({
     }
     return map;
   }, [catalogue]);
+
+  const inlineDuplicateVariant = useMemo(() => {
+    if (!newStockCategory.trim() || !newStockProductType.trim() || !newStockColor.trim()) {
+      return undefined;
+    }
+    return findDuplicateInventoryVariant(inventoryVariants, {
+      category: newStockCategory,
+      productType: newStockProductType,
+      workDesign: newStockWorkDesign || 'Standard',
+      color: newStockColor
+    });
+  }, [
+    inventoryVariants,
+    newStockCategory,
+    newStockProductType,
+    newStockWorkDesign,
+    newStockColor
+  ]);
 
   /**
    * Computes last-billed actual selling prices from saved non-cancelled invoices:
@@ -352,11 +389,7 @@ export function CreateBillView({
   }, []);
 
   /**
-   * Category-Aware Auto-Focus WITHOUT Premature Page Scroll:
-   * Triggered ONLY when a line item is added:
-   * - Service item -> focuses Selling Price (`line-price-${idx}`) with `allowScroll: false`
-   * - Stock / Material item -> focuses Quantity (`line-qty-${idx}`) with `allowScroll: false`
-   * - Blank Custom item -> focuses Item Name (`line-name-${idx}`) with `allowScroll: false`
+   * Auto-Focus WITHOUT Premature Page Scroll:
    * Because `allowScroll` is `false`, selecting 1, 2, 3, or more products NEVER scrolls the page
    * away from the product catalogue/search area.
    */
@@ -426,6 +459,7 @@ export function CreateBillView({
       const linkedVar = item.inventoryVariantId
         ? variantsMap[item.inventoryVariantId]
         : undefined;
+      if (linkedVar && !linkedVar.isActive) return false;
 
       if (hierCategory) {
         const c = linkedVar?.category || '';
@@ -479,14 +513,6 @@ export function CreateBillView({
     }
   }
 
-  /**
-   * Phone-First Customer Lookup & Auto-Fill:
-   * - As the user types a phone number, never steals focus mid-typing.
-   * - When the normalized phone reaches 10 digits and matches an existing customer,
-   *   automatically links the repeat customer and fills their saved name & notes
-   *   (unless the user already manually typed a custom name).
-   * - If the user edits the phone away from an auto-filled customer, cleanly unlinks `selectedCustomerId`.
-   */
   function handleCustomerPhoneChange(rawVal: string) {
     setCustomerPhone(rawVal);
     setValidationError(null);
@@ -510,7 +536,6 @@ export function CreateBillView({
       }
     }
 
-    // If previously auto-filled by phone and the digits no longer match that customer, unlink cleanly
     if (selectedCustomerId) {
       const prevCust = customers.find((c) => c.id === selectedCustomerId);
       if (prevCust && normalizeCustomerPhoneDigits(prevCust.phone) !== digits) {
@@ -534,10 +559,7 @@ export function CreateBillView({
 
   /**
    * Adds a catalogue item (or stock-linked material) to the bill WITHOUT scrolling the page.
-   * Category-Aware Auto-Focus:
-   * - Tailoring Service (`category === 'service'`): auto-focuses `Selling Price (₹)` (`line-price-${idx}`) with `allowScroll: false`.
-   * - Material / Stock Product (`category === 'product'` or `inventoryVariantId` present): auto-focuses `Qty` (`line-qty-${idx}`) with `allowScroll: false`.
-   * The product selection area stays completely steady so the user can select multiple products uninterrupted.
+   * Neither quantity nor selling price is pre-filled.
    */
   function addCatalogueItemToBill(item: CatalogueItem) {
     const newId = generateId('row');
@@ -545,12 +567,11 @@ export function CreateBillView({
       item.category !== 'service' && item.inventoryVariantId
         ? variantsMap[item.inventoryVariantId]
         : undefined;
-    const isMaterialOrStock = item.category === 'product' || Boolean(linkedVar);
 
     pendingFocusRef.current = {
       lineId: newId,
-      target: isMaterialOrStock ? 'qty' : 'price',
-      selectText: isMaterialOrStock,
+      target: 'qty',
+      selectText: false,
       allowScroll: false
     };
     setValidationError(null);
@@ -563,9 +584,9 @@ export function CreateBillView({
         catalogueItemId: item.id,
         inventoryVariantId: linkedVar ? linkedVar.id : item.inventoryVariantId ?? null,
         isNonStock: item.category === 'service' || !item.inventoryVariantId,
-        name: item.name,
+        name: linkedVar ? linkedVar.name : item.name,
         category: item.category,
-        quantity: '1',
+        quantity: '',
         unit: linkedVar ? linkedVar.unit : item.unit,
         unitPriceRupees: '',
         costPricePaise: linkedVar ? linkedVar.purchaseCostPaise : item.costPricePaise,
@@ -593,12 +614,124 @@ export function CreateBillView({
         isNonStock: true,
         name: '',
         category: 'custom',
-        quantity: '1',
+        quantity: '',
         unit: 'pc',
         unitPriceRupees: '',
         notes: ''
       }
     ]);
+  }
+
+  /**
+   * Improvement 5: Adds a newly arrived physical stock variant + opening roll directly from New Bill.
+   * The variant, opening roll, movement, and catalogue item are created atomically inside `createInvoice`
+   * ONLY when `Save Bill` succeeds.
+   */
+  function handleAddInlineNewStockItem() {
+    const cat = newStockCategory.trim() || 'Fabric';
+    const prodType = newStockProductType.trim();
+    const workDes = newStockWorkDesign.trim() || 'Standard';
+    const col = newStockColor.trim();
+    const unit = newStockUnit.trim() || 'm';
+    const openingQty = roundStockQty(Number(newStockOpeningQty || 0));
+
+    if (!prodType) {
+      onNotify('Please enter Product Type for the new stock item (e.g. Fandy Silk).', true);
+      focusAndScrollElementByTestId('new-stock-product-type', { allowScroll: false });
+      return;
+    }
+    if (!col) {
+      onNotify('Please enter Colour for the new stock item (e.g. Peacock Blue).', true);
+      focusAndScrollElementByTestId('new-stock-color', { allowScroll: false });
+      return;
+    }
+    if (!Number.isFinite(openingQty) || openingQty <= 0) {
+      onNotify('Please enter an Opening Roll Stock Quantity greater than 0.', true);
+      focusAndScrollElementByTestId('new-stock-opening-qty', { allowScroll: false });
+      return;
+    }
+
+    if (inlineDuplicateVariant) {
+      onNotify(
+        `Variant "${inlineDuplicateVariant.name}" already exists in Inventory. Use the existing item instead.`,
+        true
+      );
+      return;
+    }
+
+    const soldQtyStr = newStockSoldQty.trim();
+    if (soldQtyStr && Number(soldQtyStr) > openingQty) {
+      onNotify(
+        `Sold quantity (${soldQtyStr} ${unit}) cannot exceed opening roll stock (${openingQty} ${unit}).`,
+        true
+      );
+      focusAndScrollElementByTestId('new-stock-sold-qty', { allowScroll: false });
+      return;
+    }
+
+    const purchaseCostPaise = newStockPurchaseCost.trim()
+      ? rupeesToPaise(newStockPurchaseCost)
+      : 0;
+    const defaultSellingPricePaise = newStockSellingPrice.trim()
+      ? rupeesToPaise(newStockSellingPrice)
+      : 0;
+
+    const fullName = `${col} ${prodType} — ${workDes}`;
+    const newId = generateId('row');
+    const nextFocusTarget = !soldQtyStr
+      ? 'qty'
+      : !newStockSellingPrice.trim()
+      ? 'price'
+      : 'price';
+
+    pendingFocusRef.current = {
+      lineId: newId,
+      target: nextFocusTarget,
+      selectText: false,
+      allowScroll: false
+    };
+    setValidationError(null);
+    setValidationTargetTestId(null);
+
+    setLines((prev) => [
+      ...prev,
+      {
+        id: newId,
+        catalogueItemId: null,
+        inventoryVariantId: null,
+        isNonStock: false,
+        name: fullName,
+        category: 'product',
+        quantity: soldQtyStr,
+        unit,
+        unitPriceRupees: newStockSellingPrice.trim(),
+        costPricePaise: purchaseCostPaise,
+        notes: '',
+        photoDataUrl: newStockPhotoDataUrl || undefined,
+        newStockVariantSpec: {
+          category: cat,
+          productType: prodType,
+          workDesign: workDes,
+          color: col,
+          unit,
+          openingStockQuantity: openingQty,
+          purchaseCostPaise,
+          defaultSellingPricePaise,
+          supplier: newStockSupplier.trim() || undefined,
+          photoDataUrl: newStockPhotoDataUrl || undefined
+        }
+      }
+    ]);
+
+    // Clear per-colour fields so another colour or item can be added easily
+    setNewStockColor('');
+    setNewStockOpeningQty('');
+    setNewStockSoldQty('');
+    setNewStockPhotoDataUrl('');
+    setShowInlineNewStock(false);
+    onNotify(
+      `Added new stock item "${fullName}" (Opening roll: ${formatStockQuantity(openingQty, unit)})`
+    );
   }
 
   function updateLine(id: string, patch: Partial<DraftLineItem>) {
@@ -610,7 +743,6 @@ export function CreateBillView({
   function applyQuickQuantity(lineId: string, lineIndex: number, newQty: number) {
     const cleanQty = Math.max(0.05, roundStockQty(newQty));
     updateLine(lineId, { quantity: String(cleanQty) });
-    // After tapping a preset fractional quantity chip, if selling price is still blank, focus Selling Price without jumping the page
     const targetLine = lines[lineIndex];
     if (targetLine && !targetLine.unitPriceRupees.trim()) {
       setActiveLineId(lineId);
@@ -635,8 +767,6 @@ export function CreateBillView({
     );
     updateLine(lineId, { unitPriceRupees: rupeesStr });
 
-    // Check if another added line item still has a blank required field (name/qty/price).
-    // If so, focus that next blank item field without scrolling away to Customer Details.
     const nextBlank = findNextBlankBillingField({
       lines: updatedLines,
       customerPhone,
@@ -654,8 +784,6 @@ export function CreateBillView({
       return;
     }
 
-    // All current items have prices; keep focus on this item's price input without scrolling
-    // so the user can either select more products or press Enter / tap "Next: Customer Details"
     setActiveLineId(lineId);
     setActiveLineField('price');
     focusAndScrollElementByTestId(`line-price-${lineIndex}`, {
@@ -664,13 +792,6 @@ export function CreateBillView({
     });
   }
 
-  /**
-   * Advances from a completed item field or section to the next blank field:
-   * - If any item in `lines` still has a blank required field (`name`, `qty <= 0`, or `unitPriceRupees`),
-   *   focuses and scrolls to that blank item field within Section 1.
-   * - Only when ALL added items are complete does it scroll to Section 3 (`4. Customer Details`)
-   *   and focus `input-customer-phone` (or `input-customer-name` / `input-advance-amount`).
-   */
   function focusNextBlankOrAdvanceSection(startAfterLineIdx = -1) {
     const nextTarget = findNextBlankBillingField({
       lines,
@@ -722,15 +843,6 @@ export function CreateBillView({
     }
   }
 
-  /**
-   * Mobile Keyboard Next / Enter Navigation Chain:
-   * - Name -> Qty (or Selling Price if Qty > 0 and Price is blank)
-   * - Qty -> Selling Price
-   * - Selling Price / Item Notes -> Any remaining blank item field in `lines`, or Customer Phone (`input-customer-phone`) when all items are complete
-   * - Customer Phone -> Customer Name (if empty) or Advance Received (`input-advance-amount`)
-   * - Customer Name -> Customer Phone (if invalid) or Advance Received (`input-advance-amount`)
-   * - Advance Received -> Blurs mobile keyboard and scrolls Save Bill into view
-   */
   function handleFieldKeyDown(
     e: React.KeyboardEvent<HTMLInputElement>,
     stepType:
@@ -841,6 +953,7 @@ export function CreateBillView({
           ...l,
           inventoryVariantId: targetVar.id,
           isNonStock: false,
+          newStockVariantSpec: undefined,
           unit: targetVar.unit,
           costPricePaise: targetVar.purchaseCostPaise,
           name: l.name.trim() ? l.name : targetVar.name
@@ -1021,6 +1134,21 @@ export function CreateBillView({
         };
       }
 
+      if (l.newStockVariantSpec) {
+        const openMilli = toQtyUnits(l.newStockVariantSpec.openingStockQuantity);
+        const reqMilli = toQtyUnits(l.qty);
+        if (reqMilli > openMilli) {
+          return {
+            error: `Insufficient opening stock for "${l.name}": opening roll is ${formatStockQuantity(
+              l.newStockVariantSpec.openingStockQuantity,
+              l.unit
+            )}, but bill quantity is ${formatStockQuantity(l.qty, l.unit)}.`,
+            step: 1,
+            targetTestId: `line-qty-${i}`
+          };
+        }
+      }
+
       if (l.category !== 'service' && !l.isNonStock && l.inventoryVariantId) {
         const cur = requestedMilliByVariant.get(l.inventoryVariantId) || 0;
         requestedMilliByVariant.set(l.inventoryVariantId, cur + toQtyUnits(l.qty));
@@ -1077,7 +1205,8 @@ export function CreateBillView({
     if (!customerPhone.trim() || customerPhone.replace(/\D/g, '').length < 6) {
       if (!customerName.trim()) {
         return {
-          error: 'Please enter the customer name and a valid customer phone number (at least 6 digits).',
+          error:
+            'Please enter the customer name and a valid customer phone number (at least 6 digits).',
           step: 3,
           targetTestId: 'input-customer-phone'
         };
@@ -1232,7 +1361,16 @@ export function CreateBillView({
           unitPricePaise: l.unitPaise,
           costPricePaise: l.costPricePaise,
           notes: l.notes.trim() || undefined,
-          photoId: l.photoId
+          photoId: l.photoId,
+          newStockVariantSpec: l.newStockVariantSpec
+            ? {
+                ...l.newStockVariantSpec,
+                defaultSellingPricePaise:
+                  l.unitPaise > 0
+                    ? l.unitPaise
+                    : l.newStockVariantSpec.defaultSellingPricePaise
+              }
+            : undefined
         })),
         discountType,
         discountValue: calculated.discountVal,
@@ -1273,12 +1411,6 @@ export function CreateBillView({
     }
   }
 
-  /**
-   * Resolves optional price shortcuts for a line item:
-   * 1. Customer's last billed rate for this item (if repeat customer has bought it before)
-   * 2. Shop's last billed rate for this item from actual saved invoices
-   * 3. Catalogue / Variant reference rate (as a secondary optional 1-tap shortcut inside the active row)
-   */
   function getLinePriceShortcuts(line: DraftLineItem): {
     lastBilledPaise?: number;
     lastBilledLabel?: string;
@@ -1440,23 +1572,21 @@ export function CreateBillView({
               </span>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 border-t border-l border-alif-border bg-alif-bg max-h-40 overflow-y-auto">
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 border-t border-l border-alif-border bg-alif-bg max-h-44 overflow-y-auto">
               {frequentlyUsed.map(({ item, variant, invoiceUsageCount, isPinned }) => {
+                const displayColor = item.color || variant?.color || '';
+                const displayType = item.productType || variant?.productType || '';
+                const displayWork = item.workDesign || variant?.workDesign || '';
+                const swatch = resolveColorSwatchHex(displayColor);
                 const thumbSrc =
                   item.photoDataUrl ||
                   variant?.photoDataUrl ||
                   generateProductPlaceholderSvg(
-                    item.productType || item.name,
-                    item.workDesign || item.category,
-                    item.color || ''
+                    displayType || item.name,
+                    displayWork || item.category,
+                    displayColor
                   );
-                const variantMeta = [
-                  item.productType || variant?.productType,
-                  item.workDesign || variant?.workDesign,
-                  item.color || variant?.color
-                ]
-                  .filter(Boolean)
-                  .join(' • ');
+                const stockStatus = variant ? getVariantStockStatus(variant) : null;
 
                 return (
                   <button
@@ -1464,27 +1594,44 @@ export function CreateBillView({
                     type="button"
                     onClick={() => addCatalogueItemToBill(item)}
                     data-testid={`freq-pick-${item.id}`}
-                    className="text-left p-2.5 border-r border-b border-alif-border bg-white hover:bg-stone-50 transition flex items-center gap-2.5 min-h-[52px]"
+                    className="text-left p-2.5 border-r border-b border-alif-border bg-white hover:bg-stone-50 transition flex items-start gap-2.5 min-h-[58px]"
                   >
                     <img
                       src={thumbSrc}
                       alt={item.name}
-                      className="w-8 h-8 object-cover border border-alif-border shrink-0"
+                      className="w-9 h-9 object-cover border border-alif-border shrink-0 mt-0.5"
                     />
-                    <div className="min-w-0 flex-1">
+                    <div className="min-w-0 flex-1 space-y-0.5">
                       <div className="text-xs sm:text-sm font-semibold text-alif-black truncate">
-                        {item.name}
+                        {displayType || item.name}
                       </div>
-                      {variantMeta && (
-                        <div className="text-[11px] text-alif-grey truncate">{variantMeta}</div>
+                      {(displayColor || displayWork) && (
+                        <div className="flex items-center gap-1 flex-wrap">
+                          {displayColor && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.2 text-[10px] font-mono font-bold border border-black bg-stone-50 text-alif-black">
+                              <span
+                                className="w-2 h-2 border border-black inline-block shrink-0"
+                                style={{ backgroundColor: swatch.bg }}
+                              />
+                              {displayColor}
+                            </span>
+                          )}
+                          {displayWork && (
+                            <span className="text-[10px] text-alif-grey truncate">
+                              {displayWork}
+                            </span>
+                          )}
+                        </div>
                       )}
-                      <div className="flex items-center gap-1.5 mt-0.5 text-[10px] font-mono text-alif-charcoal">
-                        {isPinned && <span>★ Pinned</span>}
-                        {invoiceUsageCount > 0 && (
-                          <span>• {invoiceUsageCount}× billed</span>
-                        )}
+                      <div className="flex items-center gap-1.5 text-[10px] font-mono text-alif-charcoal">
+                        {isPinned && <span>★</span>}
+                        {invoiceUsageCount > 0 && <span>{invoiceUsageCount}×</span>}
                         {variant && (
-                          <span className="ml-auto font-bold">
+                          <span
+                            className={`ml-auto font-bold ${
+                              stockStatus === 'Out of Stock' ? 'underline' : ''
+                            }`}
+                          >
                             {formatStockQuantity(variant.totalQuantity, variant.unit)}
                           </span>
                         )}
@@ -1505,7 +1652,7 @@ export function CreateBillView({
             <div>
               <h3 className="editorial-subhead">1. Select Product or Service</h3>
               <p className="text-xs text-alif-grey mt-0.5">
-                Select one or more items freely without page jumps, then fill quantities &amp; selling rates below.
+                Select one or more items freely without page jumps, or add a newly arrived stock roll inline.
               </p>
             </div>
 
@@ -1534,8 +1681,8 @@ export function CreateBillView({
             </div>
           </div>
 
-          {/* Intelligent Offline Search + Custom Item Action (Never auto-selects approximate matches while typing) */}
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+          {/* Intelligent Offline Search + New Stock Item + Custom Item Actions */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
             <input
               type="text"
               enterKeyHint="search"
@@ -1556,15 +1703,262 @@ export function CreateBillView({
                 Clear Search
               </button>
             )}
-            <button
-              type="button"
-              onClick={addBlankCustomItem}
-              data-testid="btn-add-custom-line"
-              className="px-4 py-2 text-xs uppercase tracking-wider font-semibold bg-alif-charcoal text-white hover:bg-black shrink-0"
-            >
-              + Custom Item
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setShowInlineNewStock((prev) => !prev)}
+                data-testid="btn-toggle-inline-new-stock"
+                className={`px-3.5 py-2 text-xs uppercase tracking-wider font-semibold border min-h-[40px] ${
+                  showInlineNewStock
+                    ? 'bg-alif-black text-white border-black'
+                    : 'bg-stone-50 text-alif-black border-black hover:bg-stone-100'
+                }`}
+              >
+                {showInlineNewStock ? 'Hide Stock Form ▲' : '+ New Stock Item'}
+              </button>
+              <button
+                type="button"
+                onClick={addBlankCustomItem}
+                data-testid="btn-add-custom-line"
+                className="px-3.5 py-2 text-xs uppercase tracking-wider font-semibold bg-alif-charcoal text-white hover:bg-black min-h-[40px]"
+              >
+                + Custom Item
+              </button>
+            </div>
           </div>
+
+          {/* Improvement 5: Compact Inline "+ New Stock Item" Panel on New Bill */}
+          {showInlineNewStock && (
+            <div
+              data-testid="inline-new-stock-form"
+              className="border-2 border-black bg-stone-50 p-3.5 space-y-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-xs font-bold uppercase tracking-wider text-alif-black">
+                    New Stock Variant &amp; Opening Roll (Created Atomically on Bill Save)
+                  </div>
+                  <p className="text-[11px] text-alif-grey">
+                    Adds the new variant, opening roll, and catalogue item when this bill is saved, and deducts the billed quantity once.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowInlineNewStock(false)}
+                  className="btn-inline text-xs text-alif-grey underline"
+                >
+                  Cancel
+                </button>
+              </div>
+
+              {inlineDuplicateVariant && (
+                <div
+                  data-testid="inline-new-stock-duplicate-alert"
+                  className="p-2.5 bg-white border border-black flex flex-wrap items-center justify-between gap-2 text-xs"
+                >
+                  <span>
+                    Variant <strong>{inlineDuplicateVariant.name}</strong> already exists (Avail:{' '}
+                    {formatStockQuantity(
+                      inlineDuplicateVariant.totalQuantity,
+                      inlineDuplicateVariant.unit
+                    )}
+                    ).
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const existingCat = catalogue.find(
+                        (c) => c.inventoryVariantId === inlineDuplicateVariant.id
+                      );
+                      if (existingCat) {
+                        addCatalogueItemToBill(existingCat);
+                        setShowInlineNewStock(false);
+                      }
+                    }}
+                    data-testid="btn-use-existing-stock-variant"
+                    className="px-2.5 py-1 bg-alif-black text-white text-xs font-semibold uppercase"
+                  >
+                    Select Existing Variant →
+                  </button>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div>
+                  <label className="block editorial-label mb-1">Category *</label>
+                  <input
+                    type="text"
+                    value={newStockCategory}
+                    onChange={(e) => setNewStockCategory(e.target.value)}
+                    placeholder="Fabric"
+                    data-testid="new-stock-category"
+                    className="w-full px-2.5 py-1.5 text-sm bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block editorial-label mb-1">Product Type *</label>
+                  <input
+                    type="text"
+                    value={newStockProductType}
+                    onChange={(e) => setNewStockProductType(e.target.value)}
+                    placeholder="e.g. Organza Tissue"
+                    data-testid="new-stock-product-type"
+                    className="w-full px-2.5 py-1.5 text-sm bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block editorial-label mb-1">Work / Design</label>
+                  <input
+                    type="text"
+                    value={newStockWorkDesign}
+                    onChange={(e) => setNewStockWorkDesign(e.target.value)}
+                    placeholder="e.g. Zari Border"
+                    data-testid="new-stock-work-design"
+                    className="w-full px-2.5 py-1.5 text-sm bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block editorial-label mb-1">Colour *</label>
+                  <input
+                    type="text"
+                    value={newStockColor}
+                    onChange={(e) => setNewStockColor(e.target.value)}
+                    placeholder="e.g. Peacock Blue"
+                    data-testid="new-stock-color"
+                    className="w-full px-2.5 py-1.5 text-sm bg-white"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+                <div>
+                  <label className="block editorial-label mb-1">Unit *</label>
+                  <select
+                    value={newStockUnit}
+                    onChange={(e) => setNewStockUnit(e.target.value)}
+                    data-testid="new-stock-unit"
+                    className="w-full px-2.5 py-1.5 text-sm bg-white"
+                  >
+                    <option value="m">m (Metres)</option>
+                    <option value="pc">pc</option>
+                    <option value="pair">pair</option>
+                    <option value="roll">roll</option>
+                    <option value="set">set</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block editorial-label mb-1">
+                    Opening Roll Stock ({newStockUnit}) *
+                  </label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0.01"
+                    step="any"
+                    value={newStockOpeningQty}
+                    onChange={(e) => setNewStockOpeningQty(e.target.value)}
+                    placeholder="e.g. 15"
+                    data-testid="new-stock-opening-qty"
+                    className="w-full px-2.5 py-1.5 text-sm font-mono bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block editorial-label mb-1">
+                    Bill Qty ({newStockUnit})
+                  </label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0.01"
+                    step="any"
+                    value={newStockSoldQty}
+                    onChange={(e) => setNewStockSoldQty(e.target.value)}
+                    placeholder="e.g. 2.5"
+                    data-testid="new-stock-sold-qty"
+                    className="w-full px-2.5 py-1.5 text-sm font-mono bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block editorial-label mb-1">Selling Price (₹)</label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="any"
+                    value={newStockSellingPrice}
+                    onChange={(e) => setNewStockSellingPrice(e.target.value)}
+                    placeholder="e.g. 550"
+                    data-testid="new-stock-selling-price"
+                    className="w-full px-2.5 py-1.5 text-sm font-mono bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block editorial-label mb-1">Purchase Cost (₹)</label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min="0"
+                    step="any"
+                    value={newStockPurchaseCost}
+                    onChange={(e) => setNewStockPurchaseCost(e.target.value)}
+                    placeholder="Optional"
+                    data-testid="new-stock-purchase-cost"
+                    className="w-full px-2.5 py-1.5 text-sm font-mono bg-white"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-alif-border">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    id="new-stock-camera-input"
+                    onChange={async (e) => {
+                      const f = e.target.files?.[0];
+                      if (!f) return;
+                      try {
+                        const p = await compressAndResizeImage(f);
+                        setNewStockPhotoDataUrl(p.dataUrl);
+                      } catch (_err) {
+                        // Ignore
+                      }
+                    }}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      (
+                        document.getElementById('new-stock-camera-input') as HTMLInputElement | null
+                      )?.click()
+                    }
+                    data-testid="btn-new-stock-camera"
+                    className="px-2.5 py-1 text-xs font-semibold uppercase border border-alif-border bg-white text-alif-black min-h-[34px]"
+                  >
+                    📷 Roll Photo
+                  </button>
+                  {newStockPhotoDataUrl && (
+                    <img
+                      src={newStockPhotoDataUrl}
+                      alt="New stock preview"
+                      className="w-8 h-8 object-cover border border-black"
+                    />
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleAddInlineNewStockItem}
+                  data-testid="btn-add-inline-new-stock"
+                  className="px-4 py-2 bg-alif-black text-white text-xs font-semibold uppercase tracking-wider hover:bg-zinc-800 min-h-[38px]"
+                >
+                  + Add Stock Item to Bill
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Hierarchical Browsing Bar when viewing All or Materials & Stock */}
           {(catFilter === 'all' || catFilter === 'product') &&
@@ -1647,19 +2041,23 @@ export function CreateBillView({
               </div>
             )}
 
-          {/* 2-Col Mobile / 4-Col Desktop Quick-Pick Grid (With thumbnails & variant details; strictly zero demo prices) */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 border-t border-l border-alif-border max-h-52 overflow-y-auto bg-alif-bg">
+          {/* Improvement 4: 2-Col Mobile / 4-Col Desktop Quick-Pick Grid with Clear Colour, Design & Stock Badges (Strictly Zero Demo Prices) */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 border-t border-l border-alif-border max-h-60 overflow-y-auto bg-alif-bg">
             {rankedCatalogueResults.map(({ item, isApproximateMatch }) => {
               const linkedVar = item.inventoryVariantId
                 ? variantsMap[item.inventoryVariantId]
                 : undefined;
+              const displayColor = item.color || linkedVar?.color || '';
+              const displayType = item.productType || linkedVar?.productType || '';
+              const displayWork = item.workDesign || linkedVar?.workDesign || '';
+              const swatch = resolveColorSwatchHex(displayColor);
               const thumbSrc =
                 item.photoDataUrl ||
                 linkedVar?.photoDataUrl ||
                 generateProductPlaceholderSvg(
-                  item.productType || item.name,
-                  item.workDesign || item.category,
-                  item.color || ''
+                  displayType || item.name,
+                  displayWork || item.category,
+                  displayColor
                 );
               const stockStatus = linkedVar ? getVariantStockStatus(linkedVar) : null;
 
@@ -1669,21 +2067,52 @@ export function CreateBillView({
                   type="button"
                   onClick={() => addCatalogueItemToBill(item)}
                   data-testid={`pick-${item.id}`}
-                  className="text-left p-2.5 border-r border-b border-alif-border bg-white hover:bg-stone-50 transition flex items-center gap-2.5 min-h-[52px]"
+                  className="text-left p-2.5 border-r border-b border-alif-border bg-white hover:bg-stone-50 transition flex items-start gap-2.5 min-h-[58px]"
                 >
                   <img
                     src={thumbSrc}
                     alt={item.name}
-                    className="w-8 h-8 object-cover border border-alif-border shrink-0"
+                    className="w-9 h-9 object-cover border border-alif-border shrink-0 mt-0.5"
                   />
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0 flex-1 space-y-0.5">
                     <div className="text-xs sm:text-sm font-medium text-alif-black truncate">
-                      {item.name}
+                      {displayType || item.name}
                     </div>
+                    {(displayColor || displayWork) && (
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {displayColor && (
+                          <span
+                            data-testid={`pick-color-badge-${item.id}`}
+                            className="inline-flex items-center gap-1 px-1.5 py-0.2 text-[10px] font-mono font-bold border border-black bg-stone-50 text-alif-black"
+                          >
+                            <span
+                              className="w-2 h-2 border border-black inline-block shrink-0"
+                              style={{ backgroundColor: swatch.bg }}
+                            />
+                            {displayColor}
+                          </span>
+                        )}
+                        {displayWork && (
+                          <span
+                            data-testid={`pick-work-badge-${item.id}`}
+                            className="text-[10px] text-alif-grey truncate"
+                          >
+                            {displayWork}
+                          </span>
+                        )}
+                      </div>
+                    )}
                     {linkedVar && (
-                      <div className="text-[10px] font-mono text-alif-grey truncate">
+                      <div
+                        data-testid={`pick-stock-badge-${item.id}`}
+                        className="text-[10px] font-mono text-alif-charcoal truncate"
+                      >
                         {formatStockQuantity(linkedVar.totalQuantity, linkedVar.unit)}{' '}
-                        {stockStatus === 'Out of Stock' ? '• Out' : ''}
+                        {stockStatus === 'Out of Stock'
+                          ? '• Out of Stock'
+                          : stockStatus === 'Low Stock'
+                          ? '• Low'
+                          : ''}
                       </div>
                     )}
                     {isApproximateMatch && catSearch.trim() && (
@@ -1709,7 +2138,9 @@ export function CreateBillView({
                   Selected ({lines.length}):
                 </span>
                 {calculated.parsedLines.map((l, idx) => {
+                  const needsQty = !(Number(l.quantity) > 0);
                   const needsPrice = !l.unitPriceRupees.trim();
+                  const isIncomplete = needsQty || needsPrice || !l.name.trim();
                   return (
                     <button
                       key={l.id}
@@ -1717,7 +2148,7 @@ export function CreateBillView({
                       onClick={() => {
                         const targetField = !l.name.trim()
                           ? `line-name-${idx}`
-                          : l.category === 'product' && needsPrice
+                          : needsQty
                           ? `line-qty-${idx}`
                           : `line-price-${idx}`;
                         focusAndScrollElementByTestId(targetField, {
@@ -1728,13 +2159,14 @@ export function CreateBillView({
                       }}
                       data-testid={`selected-pill-${idx}`}
                       className={`px-2 py-1 text-xs font-mono border min-h-[32px] transition ${
-                        needsPrice
+                        isIncomplete
                           ? 'bg-white text-alif-black border-black'
                           : 'bg-alif-black text-white border-black'
                       }`}
                     >
-                      #{idx + 1} {l.name || 'Custom'} ({l.quantity}
-                      {l.unit}) • {needsPrice ? 'Enter ₹' : formatINR(l.lineTotalPaise)}
+                      #{idx + 1} {l.name || 'Custom'}{' '}
+                      {needsQty ? `(Enter ${l.unit})` : `(${l.quantity}${l.unit})`} •{' '}
+                      {needsPrice ? 'Enter ₹' : formatINR(l.lineTotalPaise)}
                     </button>
                   );
                 })}
@@ -1791,9 +2223,13 @@ export function CreateBillView({
                     ? variantsMap[line.inventoryVariantId]
                     : undefined;
                 const isStockShort =
-                  linkedVar && toQtyUnits(line.qty) > toQtyUnits(linkedVar.totalQuantity);
+                  (linkedVar && toQtyUnits(line.qty) > toQtyUnits(linkedVar.totalQuantity)) ||
+                  (line.newStockVariantSpec &&
+                    toQtyUnits(line.qty) >
+                      toQtyUnits(line.newStockVariantSpec.openingStockQuantity));
                 const isFractionalUnit = isFractionalFabricUnit(line.unit, line.category);
-                const isRowActive = activeLineId === line.id || idx === calculated.parsedLines.length - 1;
+                const isRowActive =
+                  activeLineId === line.id || idx === calculated.parsedLines.length - 1;
                 const priceShortcuts = getLinePriceShortcuts(line);
                 const hasNameError = validationTargetTestId === `line-name-${idx}`;
                 const hasQtyError = validationTargetTestId === `line-qty-${idx}`;
@@ -1819,6 +2255,18 @@ export function CreateBillView({
                         {line.category === 'service' ? (
                           <span className="text-[11px] font-mono text-alif-grey">
                             Service (Non-stock)
+                          </span>
+                        ) : line.newStockVariantSpec ? (
+                          <span
+                            data-testid={`line-new-stock-badge-${idx}`}
+                            className="px-2 py-0.5 text-[11px] font-mono bg-alif-black text-white border border-black"
+                          >
+                            New Stock Roll:{' '}
+                            {formatStockQuantity(
+                              line.newStockVariantSpec.openingStockQuantity,
+                              line.unit
+                            )}{' '}
+                            (Created on Save)
                           </span>
                         ) : linkedVar ? (
                           <span
@@ -1937,7 +2385,6 @@ export function CreateBillView({
                             enterKeyHint="next"
                             min="0"
                             step="any"
-                            placeholder="0"
                             value={line.unitPriceRupees}
                             onFocus={() => {
                               setActiveLineId(line.id);
@@ -1973,7 +2420,6 @@ export function CreateBillView({
                         data-testid={`line-shortcuts-${idx}`}
                         className="bg-stone-50 border border-alif-border p-2.5 space-y-2"
                       >
-                        {/* Fractional Fabric Measurement Chips (or Piece Steppers) */}
                         <div className="flex flex-wrap items-center gap-1.5">
                           <span className="editorial-label text-alif-charcoal mr-1">
                             {isFractionalUnit ? `Quick ${line.unit}:` : 'Quick Qty:'}
@@ -2032,7 +2478,6 @@ export function CreateBillView({
                           </button>
                         </div>
 
-                        {/* Optional Last-Billed / Reference Selling Price Shortcut (Never auto-locked; 1-tap helper) */}
                         {(priceShortcuts.lastBilledPaise || priceShortcuts.referencePaise) && (
                           <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-alif-border">
                             <span className="editorial-label text-alif-charcoal">
@@ -2082,36 +2527,38 @@ export function CreateBillView({
                     )}
 
                     {/* Optional Inventory Stock Variant Selector for Material & Custom Items */}
-                    {line.category !== 'service' && inventoryVariants.length > 0 && (
-                      <div className="bg-stone-50 p-2.5 border border-alif-border flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                        <label
-                          htmlFor={`line-stock-select-${line.id}`}
-                          className="editorial-label text-alif-charcoal"
-                        >
-                          Physical Stock Connection (FIFO on Save):
-                        </label>
-                        <select
-                          id={`line-stock-select-${line.id}`}
-                          value={line.isNonStock ? '' : line.inventoryVariantId || ''}
-                          onChange={(e) =>
-                            handleLineStockVariantChange(line.id, e.target.value)
-                          }
-                          data-testid={`line-stock-select-${idx}`}
-                          className="px-2.5 py-1.5 text-xs font-mono bg-white sm:w-96"
-                        >
-                          <option value="">
-                            Non-Stock / Customer&apos;s Own Material (Do not deduct inventory)
-                          </option>
-                          {inventoryVariants
-                            .filter((v) => v.isActive)
-                            .map((v) => (
-                              <option key={v.id} value={v.id}>
-                                {v.name} — Avail: {formatStockQuantity(v.totalQuantity, v.unit)}
-                              </option>
-                            ))}
-                        </select>
-                      </div>
-                    )}
+                    {line.category !== 'service' &&
+                      !line.newStockVariantSpec &&
+                      inventoryVariants.length > 0 && (
+                        <div className="bg-stone-50 p-2.5 border border-alif-border flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <label
+                            htmlFor={`line-stock-select-${line.id}`}
+                            className="editorial-label text-alif-charcoal"
+                          >
+                            Physical Stock Connection (FIFO on Save):
+                          </label>
+                          <select
+                            id={`line-stock-select-${line.id}`}
+                            value={line.isNonStock ? '' : line.inventoryVariantId || ''}
+                            onChange={(e) =>
+                              handleLineStockVariantChange(line.id, e.target.value)
+                            }
+                            data-testid={`line-stock-select-${idx}`}
+                            className="px-2.5 py-1.5 text-xs font-mono bg-white sm:w-96"
+                          >
+                            <option value="">
+                              Non-Stock / Customer&apos;s Own Material (Do not deduct inventory)
+                            </option>
+                            {inventoryVariants
+                              .filter((v) => v.isActive)
+                              .map((v) => (
+                                <option key={v.id} value={v.id}>
+                                  {v.name} — Avail: {formatStockQuantity(v.totalQuantity, v.unit)}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                      )}
 
                     {/* Row 3: Optional Item Note & Optional Garment Photo Controls */}
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pt-2 border-t border-alif-border">
@@ -2135,7 +2582,6 @@ export function CreateBillView({
                       </div>
 
                       <div className="flex items-center gap-2 shrink-0">
-                        {/* Hidden Camera & Gallery File Inputs */}
                         <input
                           type="file"
                           accept="image/*"
@@ -2324,7 +2770,6 @@ export function CreateBillView({
                 enterKeyHint="next"
                 min="0"
                 step="any"
-                placeholder="0"
                 value={discountInput}
                 onChange={(e) => {
                   setDiscountInput(e.target.value);
@@ -2603,7 +3048,6 @@ export function CreateBillView({
                   enterKeyHint="done"
                   min="0"
                   step="any"
-                  placeholder="0"
                   value={advanceInput}
                   onChange={(e) => {
                     setAdvanceInput(e.target.value);
@@ -2711,6 +3155,16 @@ export function CreateBillView({
           </div>
         </div>
 
+        {/* Service-Only Garment Collection Notice (Shown ONLY when at least one service item is selected; hidden for products) */}
+        {lines.some((l) => l.category === 'service') && (
+          <div
+            data-testid="bill-collection-notice"
+            className="px-3.5 py-2.5 bg-stone-50 border border-alif-border text-xs font-mono text-alif-charcoal"
+          >
+            Receipt Note (Tailoring Services): Please bring this bill at the time of garment collection.
+          </div>
+        )}
+
         {/* Inline Validation Alert (Never obscured by sticky bar; includes jump-to-field button) */}
         {validationError && (
           <div
@@ -2785,7 +3239,7 @@ export function CreateBillView({
       {/* Photo Preview Modal */}
       {previewPhoto && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 alif-modal-backdrop"
           role="dialog"
           aria-modal="true"
           data-testid="modal-photo-preview"

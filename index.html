@@ -2,21 +2,120 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
     <meta name="theme-color" content="#0B0B0D" />
-    <meta name="description" content="alif. — Offline Billing, Tailoring Catalogue & Receipt Management PWA (Daal Kuan College Road, Sahibganj, 816109)" />
+    <meta name="background-color" content="#F7F6F2" />
+    <meta name="application-name" content="alif." />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="alif." />
+    <meta
+      name="description"
+      content="alif. — Offline Billing, Tailoring Catalogue, Inventory & Receipt Management PWA (Daal Kuan College Road, Sahibganj, 816109)"
+    />
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="icon" type="image/x-icon" href="./favicon.ico" />
+    <link rel="icon" type="image/svg+xml" href="./icons/icon-192.svg" />
     <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="./favicon-16x16.png" />
+    <link rel="shortcut icon" href="./favicon.ico" />
     <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
-    <title>alif. — Billing & Tailoring Management</title>
+    <title>alif. — Billing, Inventory &amp; Tailoring Management</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        min-height: 100%;
+        background-color: #F7F6F2;
+        color: #1C1D21;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .alif-boot-shell {
+        min-height: 100vh;
+        min-height: 100dvh;
+        display: flex;
+        flex-direction: column;
+        background-color: #F7F6F2;
+      }
+      .alif-boot-header {
+        height: 56px;
+        border-bottom: 1px solid #0B0B0D;
+        background-color: #F7F6F2;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 12px;
+      }
+      .alif-boot-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .alif-boot-card {
+        margin: 32px auto;
+        max-width: 420px;
+        width: calc(100% - 24px);
+        background: #FFFFFF;
+        border: 1px solid #E2E0D8;
+        padding: 40px 24px;
+        text-align: center;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+      }
+      @keyframes alifBootLine {
+        0% { transform: translateX(-100%); }
+        50% { transform: translateX(0%); }
+        100% { transform: translateX(100%); }
+      }
+      .alif-boot-bar {
+        width: 96px;
+        height: 2px;
+        background: #E2E0D8;
+        position: relative;
+        overflow: hidden;
+      }
+      .alif-boot-bar::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: #0B0B0D;
+        animation: alifBootLine 1.1s ease-in-out infinite;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .alif-boot-bar::after { animation: none; }
+      }
+    </style>
   </head>
-  <body class="bg-alif-bg text-alif-charcoal antialiased selection:bg-alif-black selection:text-white">
-    <div id="root"></div>
+  <body class="bg-alif-bg text-alif-charcoal">
+    <div id="root">
+      <div class="alif-boot-shell" data-testid="premount-splash-shell">
+        <div class="alif-boot-header">
+          <div class="alif-boot-brand">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="32" height="32" aria-hidden="true" style="display:block;flex-shrink:0">
+              <circle cx="96" cy="96" r="90" fill="#F7F6F2" stroke="#1C1D21" stroke-width="5"/>
+              <circle cx="96" cy="96" r="80" fill="none" stroke="#E2E0D8" stroke-width="2"/>
+              <text x="97.5" y="114" text-anchor="middle" font-family="'Ubuntu', sans-serif" font-size="60" font-weight="500" fill="#0B0B0D" letter-spacing="-1.5">alif.</text>
+            </svg>
+            <span style="font-family:'Ubuntu',sans-serif;font-size:20px;font-weight:500;color:#0B0B0D;letter-spacing:-0.02em;text-transform:lowercase">alif.</span>
+            <span style="font-size:13px;color:#6B7280">Sahibganj • Offline POS</span>
+          </div>
+        </div>
+        <div class="alif-boot-card">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" width="64" height="64" aria-hidden="true" style="display:block">
+            <circle cx="96" cy="96" r="90" fill="#F7F6F2" stroke="#1C1D21" stroke-width="5"/>
+            <circle cx="96" cy="96" r="80" fill="none" stroke="#E2E0D8" stroke-width="2"/>
+            <text x="97.5" y="114" text-anchor="middle" font-family="'Ubuntu', sans-serif" font-size="60" font-weight="500" fill="#0B0B0D" letter-spacing="-1.5">alif.</text>
+          </svg>
+          <div style="font-family:'Ubuntu',sans-serif;font-size:24px;font-weight:500;color:#0B0B0D;letter-spacing:-0.02em;text-transform:lowercase">alif.</div>
+          <div style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:#1C1D21">Ladies Tailoring &amp; Boutique Finishing</div>
+          <div style="font-size:12px;color:#6B7280">Daal Kuan College Road, Sahibganj • Offline Ledger Ready</div>
+          <div class="alif-boot-bar"></div>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

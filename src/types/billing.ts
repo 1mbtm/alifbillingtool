@@ -80,6 +80,24 @@ export interface InventoryMovement {
   createdAt: string;    // ISO timestamp
 }
 
+export interface NewStockVariantSpec {
+  category: string;
+  productType: string;
+  workDesign: string;
+  color: string;
+  unit: string;
+  openingStockQuantity: number;
+  purchaseCostPaise?: number;
+  defaultSellingPricePaise?: number;
+  lowStockThreshold?: number;
+  supplier?: string;
+  bundleCode?: string;
+  receivedDate?: string;
+  photoId?: string;
+  photoDataUrl?: string;
+  notes?: string;
+}
+
 export interface ShopSettings {
   id: string;
   shopName: string;
@@ -138,7 +156,7 @@ export interface ItemPhotoRecord {
   id: string;
   invoiceId?: string;
   lineItemId: string;
-  blob: Blob;
+  blob?: Blob;
   dataUrl: string;
   mimeType: string;
   width: number;
@@ -221,6 +239,7 @@ export interface BackupPayload {
   inventoryVariants?: InventoryVariant[];
   inventoryBundles?: InventoryBundle[];
   inventoryMovements?: InventoryMovement[];
+  itemPhotos?: Array<Omit<ItemPhotoRecord, 'blob'> & { blob?: Blob }>;
 }
 
 export interface DashboardMetrics {

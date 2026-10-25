@@ -1,7 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <rect width="512" height="512" rx="96" fill="#0B0B0D"/>
-  <rect x="36" y="36" width="440" height="440" rx="72" fill="none" stroke="#6B7280" stroke-width="3" stroke-dasharray="10 10"/>
-  <text x="256" y="268" text-anchor="middle" font-family="Georgia, serif" font-size="128" font-weight="bold" fill="#F7F6F2" letter-spacing="8">ALiF</text>
-  <text x="256" y="346" text-anchor="middle" font-family="sans-serif" font-size="32" font-weight="500" fill="#9CA3AF" letter-spacing="10">LADIES TAILOR</text>
-  <text x="256" y="392" text-anchor="middle" font-family="sans-serif" font-size="20" fill="#6B7280" letter-spacing="6">SAHIBGANJ</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="alif.">
+  <circle cx="256" cy="256" r="235" fill="#F7F6F2" stroke="#1C1D21" stroke-width="6"/>
+  <circle cx="256" cy="256" r="216" fill="none" stroke="#E2E0D8" stroke-width="2.5"/>
+  <text x="260" y="304" text-anchor="middle" font-family="'Ubuntu', -apple-system, BlinkMacSystemFont, sans-serif" font-size="160" font-weight="500" fill="#0B0B0D" letter-spacing="-4">alif.</text>
 </svg>

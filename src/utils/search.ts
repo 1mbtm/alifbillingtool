@@ -1,8 +1,49 @@
 import { CatalogueItem, InventoryVariant, StockStatus } from '../types/billing';
 
 /**
+ * Resolves a subtle, editorial-grade swatch accent colour from a variant's colour name
+ * so shop staff can distinguish similar fabrics (e.g. Green vs Maroon vs Champagne Gold vs Jet Black)
+ * at a glance even before a custom camera photo is uploaded.
+ */
+export function resolveColorSwatchHex(colorName = ''): {
+  bg: string;
+  fg: string;
+  border: string;
+} {
+  const c = String(colorName || '').toLowerCase();
+  if (!c) return { bg: '#EFECE6', fg: '#1C1D21', border: '#1C1D21' };
+  if (c.includes('green') || c.includes('emerald') || c.includes('mehendi') || c.includes('olive')) {
+    return { bg: '#1E3F2B', fg: '#FFFFFF', border: '#0B0B0D' };
+  }
+  if (c.includes('maroon') || c.includes('wine') || c.includes('burgundy') || c.includes('ruby') || c.includes('red')) {
+    return { bg: '#5B1924', fg: '#FFFFFF', border: '#0B0B0D' };
+  }
+  if (c.includes('gold') || c.includes('champagne') || c.includes('mustard') || c.includes('yellow') || c.includes('zari')) {
+    return { bg: '#C5A049', fg: '#0B0B0D', border: '#0B0B0D' };
+  }
+  if (c.includes('black') || c.includes('jet') || c.includes('charcoal')) {
+    return { bg: '#111215', fg: '#FFFFFF', border: '#0B0B0D' };
+  }
+  if (c.includes('ivory') || c.includes('white') || c.includes('cream') || c.includes('offwhite')) {
+    return { bg: '#FAF8F2', fg: '#1C1D21', border: '#1C1D21' };
+  }
+  if (c.includes('rose') || c.includes('pink') || c.includes('peach') || c.includes('blush') || c.includes('coral')) {
+    return { bg: '#C98A94', fg: '#0B0B0D', border: '#0B0B0D' };
+  }
+  if (c.includes('blue') || c.includes('navy') || c.includes('teal') || c.includes('sky')) {
+    return { bg: '#1E3557', fg: '#FFFFFF', border: '#0B0B0D' };
+  }
+  if (c.includes('purple') || c.includes('lavender') || c.includes('lilac') || c.includes('plum')) {
+    return { bg: '#47294C', fg: '#FFFFFF', border: '#0B0B0D' };
+  }
+  return { bg: '#DCD8CE', fg: '#0B0B0D', border: '#1C1D21' };
+}
+
+/**
  * Generates a crisp, minimalist Zara/H&M-style SVG thumbnail data URL
  * for products or variants without a custom uploaded photo.
+ * Includes a top colour swatch band, weave/design indicator, and bold colour footer
+ * so similar fabrics and colours are visually distinct at a glance.
  */
 export function generateProductPlaceholderSvg(
   title: string,
@@ -18,21 +59,68 @@ export function generateProductPlaceholderSvg(
       ? `${words[0][0] || ''}${words[1][0] || ''}`.toUpperCase()
       : (cleanTitle.slice(0, 2) || 'AL').toUpperCase();
 
-  const shortSub = String(colorName || subtitle || 'alif.')
+  const shortDesign = String(subtitle || '')
+    .replace(/[^a-zA-Z0-9\s-]/g, '')
+    .trim()
+    .slice(0, 11)
+    .toUpperCase();
+
+  const shortColor = String(colorName || subtitle || 'alif.')
     .replace(/[^a-zA-Z0-9\s-]/g, '')
     .trim()
     .slice(0, 10)
     .toUpperCase();
 
+  const swatch = resolveColorSwatchHex(colorName);
+
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
     <rect width="96" height="96" fill="#F7F6F2"/>
+    <rect x="2" y="2" width="92" height="14" fill="${swatch.bg}"/>
     <rect x="2" y="2" width="92" height="92" fill="none" stroke="#1C1D21" stroke-width="1.5"/>
-    <line x1="2" y1="68" x2="94" y2="68" stroke="#E2E0D8" stroke-width="1"/>
-    <text x="48" y="42" font-family="Inter, sans-serif" font-size="22" font-weight="600" fill="#0B0B0D" text-anchor="middle" dominant-baseline="middle">${initials}</text>
-    <text x="48" y="81" font-family="JetBrains Mono, monospace" font-size="9.5" font-weight="500" fill="#6B7280" text-anchor="middle" letter-spacing="0.8">${shortSub}</text>
+    <line x1="2" y1="68" x2="94" y2="68" stroke="#1C1D21" stroke-width="1"/>
+    <text x="48" y="38" font-family="Inter, sans-serif" font-size="20" font-weight="700" fill="#0B0B0D" text-anchor="middle" dominant-baseline="middle">${initials}</text>
+    ${
+      shortDesign
+        ? `<text x="48" y="57" font-family="JetBrains Mono, monospace" font-size="7.5" font-weight="500" fill="#6B7280" text-anchor="middle" letter-spacing="0.4">${shortDesign}</text>`
+        : ''
+    }
+    <rect x="2.75" y="68.5" width="90.5" height="24.75" fill="${swatch.bg}"/>
+    <text x="48" y="82" font-family="JetBrains Mono, monospace" font-size="9" font-weight="700" fill="${swatch.fg}" text-anchor="middle" letter-spacing="0.7">${shortColor}</text>
   </svg>`;
 
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+/**
+ * Checks whether an InventoryVariant with the same normalized
+ * (category, productType, workDesign, color) already exists.
+ */
+export function findDuplicateInventoryVariant(
+  variants: InventoryVariant[],
+  candidate: {
+    category: string;
+    productType: string;
+    workDesign?: string;
+    color: string;
+    excludeId?: string;
+  }
+): InventoryVariant | undefined {
+  const normCat = normalizeSearchText(candidate.category);
+  const normType = normalizeSearchText(candidate.productType);
+  const normWork = normalizeSearchText(candidate.workDesign || 'Standard');
+  const normColor = normalizeSearchText(candidate.color);
+
+  if (!normCat || !normType || !normColor) return undefined;
+
+  return variants.find((v) => {
+    if (candidate.excludeId && v.id === candidate.excludeId) return false;
+    return (
+      normalizeSearchText(v.category) === normCat &&
+      normalizeSearchText(v.productType) === normType &&
+      normalizeSearchText(v.workDesign || 'Standard') === normWork &&
+      normalizeSearchText(v.color) === normColor
+    );
+  });
 }
 
 /**
@@ -456,18 +544,15 @@ export function extractInventoryHierarchy(
 
 /**
  * Determines the initial auto-focus target when adding a catalogue item to a bill:
- * - Tailoring Service ('service'): auto-focuses 'price' because quantity is almost always 1.
- * - Material / Stock item ('product' or linked to an InventoryVariant): auto-focuses 'qty' with text selected
- *   because fabric/lace measurements are typically fractional (e.g. 1.25 m, 2.5 m).
+ * Neither quantity nor selling price is pre-filled, so focus starts on blank Quantity first.
  */
 export function resolveCategoryFocusTarget(
-  category: string,
-  hasInventoryVariant = false
+  _category: string,
+  _hasInventoryVariant = false
 ): { target: 'price' | 'qty'; selectText: boolean } {
-  const isMaterialOrStock = category === 'product' || Boolean(hasInventoryVariant);
   return {
-    target: isMaterialOrStock ? 'qty' : 'price',
-    selectText: isMaterialOrStock
+    target: 'qty',
+    selectText: false
   };
 }
 

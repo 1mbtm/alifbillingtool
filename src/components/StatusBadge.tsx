@@ -1,6 +1,77 @@
 import React from 'react';
 import { PaymentStatus } from '../types/billing';
 
+export interface AlifBrandMarkProps {
+  size?: 'sm' | 'md' | 'lg' | 'xl';
+  className?: string;
+  testId?: string;
+}
+
+/**
+ * Crisp 1:1 circular atelier emblem preserving the exact lowercase `alif.` Ubuntu mark
+ * and monochrome palette (#F7F6F2, #1C1D21, #0B0B0D, #E2E0D8) without stretching or distortion.
+ */
+export function AlifBrandMark({
+  size = 'md',
+  className = '',
+  testId = 'brand-logo-mark'
+}: AlifBrandMarkProps) {
+  const sizeClass =
+    size === 'sm'
+      ? 'w-7 h-7'
+      : size === 'lg'
+      ? 'w-12 h-12'
+      : size === 'xl'
+      ? 'w-16 h-16'
+      : 'w-8 h-8';
+
+  return (
+    <span
+      data-testid={testId}
+      className={`alif-logo-mark ${sizeClass} ${className}`}
+      aria-hidden="true"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 192 192"
+        width="100%"
+        height="100%"
+        preserveAspectRatio="xMidYMid meet"
+        focusable="false"
+      >
+        <circle
+          cx="96"
+          cy="96"
+          r="90"
+          fill="#F7F6F2"
+          stroke="#1C1D21"
+          strokeWidth="5"
+        />
+        <circle
+          cx="96"
+          cy="96"
+          r="80"
+          fill="none"
+          stroke="#E2E0D8"
+          strokeWidth="2"
+        />
+        <text
+          x="97.5"
+          y="114"
+          textAnchor="middle"
+          fontFamily="'Ubuntu', -apple-system, BlinkMacSystemFont, sans-serif"
+          fontSize="60"
+          fontWeight="500"
+          fill="#0B0B0D"
+          letterSpacing="-1.5"
+        >
+          alif.
+        </text>
+      </svg>
+    </span>
+  );
+}
+
 export function StatusBadge({ status }: { status: PaymentStatus }) {
   const styles: Record<PaymentStatus, string> = {
     Paid: 'bg-alif-black text-white border-black',
@@ -45,11 +116,11 @@ export function ConfirmDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 alif-modal-backdrop"
       role="dialog"
       aria-modal="true"
     >
-      <div className="bg-white border-2 border-black max-w-md w-full p-5 sm:p-6 space-y-5">
+      <div className="bg-white border-2 border-black max-w-md w-full p-5 sm:p-6 space-y-5 alif-modal-panel overflow-y-auto">
         <div className="space-y-2">
           <div className="editorial-label">Confirmation Required</div>
           <h3 className="text-base font-semibold uppercase tracking-wider text-alif-black">

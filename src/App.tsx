@@ -33,6 +33,7 @@ import { CatalogueView } from './components/CatalogueView';
 import { ReportsView } from './components/ReportsView';
 import { SettingsBackupView } from './components/SettingsBackupView';
 import { InvoiceDetailModal } from './components/InvoiceDetailModal';
+import { AlifBrandMark } from './components/StatusBadge';
 
 const NAV_ITEMS: { id: NavTab; label: string; isPrimary?: boolean }[] = [
   { id: 'create-bill', label: '+ New Bill', isPrimary: true },
@@ -122,37 +123,50 @@ export default function App() {
   return (
     <div className="min-h-screen bg-alif-bg text-alif-charcoal flex flex-col pb-8 md:pb-10">
       {/* Sticky Top Header & Navigation (Preserved Top Navigation; No Bottom Nav) */}
-      <div className="sticky top-0 z-30 bg-alif-bg border-b border-black no-print">
+      <div className="sticky top-0 z-30 bg-alif-bg border-b border-black alif-sticky-header no-print">
         <header
           data-testid="app-header"
-          className="max-w-5xl mx-auto px-3 sm:px-6 h-12 flex items-center justify-between gap-2"
+          className="max-w-5xl mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-2.5"
         >
-          <div className="flex items-baseline gap-2.5 min-w-0">
-            <span
-              onClick={() => setActiveTab('dashboard')}
-              data-testid="brand-wordmark"
-              className="font-ubuntu text-xl tracking-tight text-alif-black font-medium lowercase cursor-pointer"
-            >
-              alif.
-            </span>
-            <span className="text-xs text-alif-grey truncate">
-              Sahibganj • Offline POS
-            </span>
+          <div
+            onClick={() => setActiveTab('dashboard')}
+            className="flex items-center gap-2.5 min-w-0 cursor-pointer select-none"
+          >
+            <AlifBrandMark size="md" testId="brand-logo-mark" />
+            <div className="flex items-baseline gap-2 min-w-0">
+              <span
+                data-testid="brand-wordmark"
+                className="font-ubuntu text-xl tracking-tight text-alif-black font-medium lowercase leading-none"
+              >
+                alif.
+              </span>
+              <span className="text-xs text-alif-grey truncate">
+                {settings.city || 'Sahibganj'} • Offline POS
+              </span>
+            </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            {metrics.outstandingInvoiceCount > 0 && (
+          <div className="flex items-center justify-end gap-2 shrink-0 min-h-[32px]">
+            {!isInitializing && metrics.outstandingInvoiceCount > 0 ? (
               <button
                 type="button"
                 onClick={() => {
                   setInvoiceStatusPreset('Unpaid');
                   setActiveTab('invoices');
                 }}
-                className="btn-inline text-xs font-mono text-alif-charcoal underline"
+                data-testid="header-due-badge"
+                className="btn-inline px-2 py-1 border border-alif-border bg-white hover:border-black text-xs font-mono font-semibold text-alif-black transition"
                 title="View unpaid bills"
               >
                 {metrics.outstandingInvoiceCount} due
               </button>
+            ) : (
+              <span
+                data-testid="header-offline-pill"
+                className="text-[11px] font-mono uppercase tracking-wider px-2 py-0.5 border border-alif-border bg-white text-alif-grey"
+              >
+                Ready
+              </span>
             )}
           </div>
         </header>
@@ -217,7 +231,7 @@ export default function App() {
           <div
             role="status"
             data-testid="toast-banner"
-            className={`px-3.5 py-2.5 border text-sm font-medium flex items-center justify-between gap-3 ${
+            className={`px-3.5 py-2.5 border text-sm font-medium flex items-center justify-between gap-3 alif-toast-enter ${
               toast.isError
                 ? 'bg-alif-charcoal text-white border-black'
                 : 'bg-alif-black text-white border-black'
@@ -247,14 +261,26 @@ export default function App() {
       {/* Main Content Area (12px horizontal padding on 360px mobile, 24px on desktop) */}
       <main className="max-w-5xl mx-auto w-full px-3 sm:px-6 py-4 sm:py-6 flex-1">
         {isInitializing ? (
-          <div className="bg-white border border-alif-border p-8 text-center space-y-2">
-            <div className="font-ubuntu text-lg font-medium text-alif-black lowercase">alif.</div>
-            <p className="text-xs text-alif-grey uppercase tracking-widest">
-              Initializing local database &amp; offline storage...
-            </p>
+          <div
+            data-testid="app-splash-screen"
+            className="bg-white border border-alif-border p-10 sm:p-12 text-center flex flex-col items-center justify-center space-y-4 my-4 alif-card-elevated"
+          >
+            <AlifBrandMark size="xl" testId="splash-logo-mark" />
+            <div className="space-y-1">
+              <div className="font-ubuntu text-2xl font-medium text-alif-black lowercase tracking-tight">
+                alif.
+              </div>
+              <div className="text-xs font-medium text-alif-charcoal uppercase tracking-wider">
+                Ladies Tailoring &amp; Boutique Finishing
+              </div>
+              <p className="text-xs text-alif-grey">
+                Daal Kuan College Road, Sahibganj • Offline Ledger Ready
+              </p>
+            </div>
+            <div className="alif-splash-progress" aria-hidden="true" />
           </div>
         ) : (
-          <>
+          <div key={activeTab} className="alif-view-enter">
             {activeTab === 'dashboard' && (
               <DashboardView
                 metrics={metrics}
@@ -361,7 +387,7 @@ export default function App() {
                 onNotify={showNotification}
               />
             )}
-          </>
+          </div>
         )}
       </main>
 

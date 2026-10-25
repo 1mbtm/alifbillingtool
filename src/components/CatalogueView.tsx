@@ -1,8 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import { CatalogueCategory, CatalogueItem, InventoryVariant } from '../types/billing';
 import { formatINR, paiseToRupeesString, rupeesToPaise } from '../utils/currency';
-import { formatStockQuantity, searchCatalogueItems } from '../utils/search';
 import {
+  formatStockQuantity,
+  generateProductPlaceholderSvg,
+  resolveColorSwatchHex,
+  searchCatalogueItems
+} from '../utils/search';
+import {
+  compressAndResizeImage,
   resetDefaultCatalogue,
   saveCatalogueItem,
   toggleCatalogueItemPin
@@ -36,6 +42,7 @@ export function CatalogueView({
   const [unit, setUnit] = useState('pc');
   const [description, setDescription] = useState('');
   const [inventoryVariantId, setInventoryVariantId] = useState<string>('');
+  const [photoDataUrl, setPhotoDataUrl] = useState<string>('');
   const [isPinned, setIsPinned] = useState<boolean>(false);
   const [isActive, setIsActive] = useState(true);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
@@ -71,6 +78,7 @@ export function CatalogueView({
     setUnit(item.unit);
     setDescription(item.description || '');
     setInventoryVariantId(item.inventoryVariantId || '');
+    setPhotoDataUrl(item.photoDataUrl || '');
     setIsPinned(Boolean(item.isPinned));
     setIsActive(item.isActive);
     setIsFormOpen(true);
@@ -87,6 +95,7 @@ export function CatalogueView({
     setUnit('pc');
     setDescription('');
     setInventoryVariantId('');
+    setPhotoDataUrl('');
     setIsPinned(false);
     setIsActive(true);
   }
@@ -121,9 +130,10 @@ export function CatalogueView({
         unit: linkedVar ? linkedVar.unit : unit,
         description,
         inventoryVariantId: category === 'service' ? null : inventoryVariantId || null,
-        productType: linkedVar?.productType,
-        workDesign: linkedVar?.workDesign,
-        color: linkedVar?.color,
+        productType: linkedVar?.productType || editingItem?.productType,
+        workDesign: linkedVar?.workDesign || editingItem?.workDesign,
+        color: linkedVar?.color || editingItem?.color,
+        photoDataUrl: photoDataUrl || undefined,
         isPinned,
         isActive
       });
@@ -169,7 +179,7 @@ export function CatalogueView({
       <section className="bg-white border border-alif-border p-4 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <div className="editorial-label">Atelier Catalogue</div>
+            <div className="editorial-label">Atelier Catalogue • Synced with Inventory</div>
             <h2 className="editorial-heading mt-0.5">
               {editingItem
                 ? `Edit Item: ${editingItem.name}`
@@ -340,7 +350,51 @@ export function CatalogueView({
               />
             </div>
 
-            <div className="flex items-center justify-between sm:justify-end gap-4 pt-2 sm:pt-5">
+            <div className="flex flex-wrap items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-5">
+              <input
+                type="file"
+                accept="image/*"
+                capture="environment"
+                id="cat-camera-input"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (!f) return;
+                  try {
+                    const p = await compressAndResizeImage(f);
+                    setPhotoDataUrl(p.dataUrl);
+                  } catch (err: any) {
+                    onNotify(err?.message || 'Could not process photo', true);
+                  }
+                }}
+                className="hidden"
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  (document.getElementById('cat-camera-input') as HTMLInputElement | null)?.click()
+                }
+                data-testid="btn-cat-camera"
+                className="px-2.5 py-1.5 text-xs font-semibold uppercase border border-alif-border bg-white text-alif-black min-h-[38px]"
+              >
+                📷 Photo
+              </button>
+              {photoDataUrl && (
+                <div className="flex items-center gap-1">
+                  <img
+                    src={photoDataUrl}
+                    alt="Catalogue preview"
+                    className="w-8 h-8 object-cover border border-black"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setPhotoDataUrl('')}
+                    className="px-1.5 py-0.5 text-xs border border-alif-border text-alif-grey"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
               <label className="inline-flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-alif-charcoal cursor-pointer">
                 <input
                   type="checkbox"
@@ -419,34 +473,75 @@ export function CatalogueView({
             const linkedVar = item.inventoryVariantId
               ? variantsMap[item.inventoryVariantId]
               : undefined;
+            const displayColor = item.color || linkedVar?.color || '';
+            const displayType = item.productType || linkedVar?.productType || '';
+            const displayWork = item.workDesign || linkedVar?.workDesign || '';
+            const swatch = resolveColorSwatchHex(displayColor);
+            const thumbSrc =
+              item.photoDataUrl ||
+              linkedVar?.photoDataUrl ||
+              generateProductPlaceholderSvg(
+                displayType || item.name,
+                displayWork || item.category,
+                displayColor
+              );
+
             return (
               <div
                 key={item.id}
+                data-testid={`cat-row-${item.id}`}
                 className="p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-stone-50"
               >
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-base font-semibold text-alif-black">{item.name}</span>
-                    <span className="text-[11px] uppercase tracking-wider px-1.5 py-0.5 border border-alif-border bg-stone-50 text-alif-charcoal">
-                      {item.category}
-                    </span>
-                    <span className="text-xs font-mono text-alif-grey">
-                      Unit: {item.unit}
-                    </span>
-                    {linkedVar && (
-                      <span className="text-xs font-mono px-1.5 py-0.5 bg-stone-100 border border-black text-alif-black">
-                        Stock: {formatStockQuantity(linkedVar.totalQuantity, linkedVar.unit)}
+                <div className="flex items-start gap-3 min-w-0">
+                  <img
+                    src={thumbSrc}
+                    alt={item.name}
+                    className="w-10 h-10 object-cover border border-black shrink-0 mt-0.5"
+                  />
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-base font-semibold text-alif-black">{item.name}</span>
+                      <span className="text-[11px] uppercase tracking-wider px-1.5 py-0.5 border border-alif-border bg-stone-50 text-alif-charcoal">
+                        {item.category}
                       </span>
-                    )}
-                    {!item.isActive && (
-                      <span className="text-[11px] uppercase tracking-wider px-1.5 py-0.5 border border-dashed border-alif-charcoal text-alif-grey">
-                        Hidden
+                      {displayColor && (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-mono font-bold px-1.5 py-0.5 border border-black bg-stone-50 text-alif-black">
+                          <span
+                            className="w-2 h-2 border border-black inline-block shrink-0"
+                            style={{ backgroundColor: swatch.bg }}
+                          />
+                          {displayColor}
+                        </span>
+                      )}
+                      {displayWork && (
+                        <span className="text-[11px] font-mono px-1.5 py-0.5 border border-alif-border bg-white text-alif-charcoal">
+                          {displayWork}
+                        </span>
+                      )}
+                      <span className="text-xs font-mono text-alif-grey">
+                        Unit: {item.unit}
                       </span>
+                      {linkedVar ? (
+                        <span className="text-xs font-mono px-1.5 py-0.5 bg-stone-100 border border-black text-alif-black">
+                          Stock: {formatStockQuantity(linkedVar.totalQuantity, linkedVar.unit)}
+                        </span>
+                      ) : (
+                        item.category !== 'service' && (
+                          <span className="text-xs font-mono text-alif-grey">
+                            Non-stock
+                          </span>
+                        )
+                      )}
+                      {!item.isActive && (
+                        <span className="text-[11px] uppercase tracking-wider px-1.5 py-0.5 border border-dashed border-alif-charcoal text-alif-grey">
+                          Hidden
+                        </span>
+                      )}
+                    </div>
+                    {item.description && (
+                      <p className="text-xs text-alif-grey">{item.description}</p>
                     )}
                   </div>
-                  {item.description && (
-                    <p className="text-xs text-alif-grey">{item.description}</p>
-                  )}
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">

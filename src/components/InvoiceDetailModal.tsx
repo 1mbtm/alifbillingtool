@@ -19,6 +19,7 @@ import {
   downloadInvoicePdf,
   GeneratedBillImage,
   generateInvoiceBillImage,
+  resolveInvoiceFooterText,
   shareBillViaSms,
   shareBillViaWhatsApp,
   UnifiedShareOutcome,
@@ -33,7 +34,7 @@ import {
   reopenAndUpdateInvoice,
   saveItemPhotoFromFile
 } from '../services/billingService';
-import { ConfirmDialog, StatusBadge } from './StatusBadge';
+import { AlifBrandMark, ConfirmDialog, StatusBadge } from './StatusBadge';
 
 interface InvoiceDetailModalProps {
   invoiceId: string;
@@ -126,11 +127,7 @@ export function InvoiceDetailModal({
       setShareOutcome(null);
       setShareValidationError(null);
 
-      if (data.invoice.balancePaise > 0) {
-        setPayAmountRupees(paiseToRupeesString(data.invoice.balancePaise));
-      } else {
-        setPayAmountRupees('');
-      }
+      setPayAmountRupees('');
       setEditLines(
         data.invoice.items.map((it) => ({
           id: it.id,
@@ -207,9 +204,10 @@ export function InvoiceDetailModal({
 
   if (loading || !invoice) {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-        <div className="bg-white border-2 border-black p-6 text-base font-semibold">
-          Loading invoice receipt...
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 alif-modal-backdrop">
+        <div className="bg-white border-2 border-black p-6 text-base font-semibold flex items-center gap-3 alif-modal-panel">
+          <AlifBrandMark size="sm" testId="modal-loading-logo" />
+          <span>Loading invoice receipt...</span>
         </div>
       </div>
     );
@@ -387,9 +385,7 @@ export function InvoiceDetailModal({
       setPayments(res.allPayments);
       setShareMessageText(buildShareBillText(res.invoice, settings));
       setPayNote('');
-      setPayAmountRupees(
-        res.invoice.balancePaise > 0 ? paiseToRupeesString(res.invoice.balancePaise) : ''
-      );
+      setPayAmountRupees('');
       onUpdated();
       onNotify(`Recorded ${payType} of ${formatINR(Math.abs(amountPaise))}`);
     } catch (err: any) {
@@ -469,17 +465,19 @@ export function InvoiceDetailModal({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-2 sm:p-4"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-2 sm:p-4 alif-modal-backdrop"
       role="dialog"
       aria-modal="true"
     >
-      <div className="bg-white border-2 border-black max-w-3xl w-full max-h-[92vh] overflow-y-auto p-3.5 sm:p-6 space-y-5">
+      <div className="bg-white border-2 border-black max-w-3xl w-full max-h-[92vh] overflow-y-auto p-3.5 sm:p-6 space-y-5 alif-modal-panel">
         {/* Print-Like Boutique Receipt Masthead */}
         <div className="flex items-start justify-between gap-3 border-b border-black pb-3.5">
-          <div className="space-y-1">
-            <div className="editorial-label">
-              {settings.shopName} • {settings.city}, {settings.state}
-            </div>
+          <div className="flex items-start gap-3 min-w-0">
+            <AlifBrandMark size="md" testId="modal-logo-mark" className="mt-0.5" />
+            <div className="space-y-1 min-w-0">
+              <div className="editorial-label">
+                {settings.shopName} • {settings.city}, {settings.state}
+              </div>
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-mono text-lg sm:text-xl font-bold text-alif-black">
                 {invoice.invoiceNumber}
@@ -490,6 +488,7 @@ export function InvoiceDetailModal({
               Issued: {invoice.invoiceDate}
               {invoice.collectionDate ? `  |  Collection: ${invoice.collectionDate}` : ''}
             </p>
+            </div>
           </div>
           <button
             type="button"
@@ -1003,6 +1002,13 @@ export function InvoiceDetailModal({
                   <span className="editorial-label mr-2">Notes:</span> {invoice.notes}
                 </div>
               )}
+
+              <div
+                data-testid="detail-receipt-footer"
+                className="text-xs font-mono text-alif-charcoal pt-2 border-t border-alif-border"
+              >
+                {resolveInvoiceFooterText(invoice, settings)}
+              </div>
             </div>
           ) : (
             <div className="p-4 space-y-4 bg-stone-50">
@@ -1293,12 +1299,12 @@ export function InvoiceDetailModal({
         {/* Photo Preview Dialog */}
         {previewPhoto && (
           <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 alif-modal-backdrop"
             role="dialog"
             aria-modal="true"
             data-testid="detail-modal-photo-preview"
           >
-            <div className="bg-white border-2 border-black max-w-md w-full p-4 space-y-4">
+            <div className="bg-white border-2 border-black max-w-md w-full p-4 space-y-4 alif-modal-panel">
               <div className="flex items-center justify-between border-b border-alif-border pb-3">
                 <h4 className="text-base font-semibold text-alif-black truncate">
                   {previewPhoto.itemName}

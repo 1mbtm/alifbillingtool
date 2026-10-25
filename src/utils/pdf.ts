@@ -80,6 +80,36 @@ export function wrapTextLines(text: string, maxChars: number): string[] {
  * containing ALiF Ladies Tailor branding, customer & invoice details, itemised table,
  * discount, payment history, advance, and balance due.
  */
+export const GARMENT_COLLECTION_NOTICE = 'Please bring this bill at the time of garment collection.';
+
+export function hasServiceItems(items?: Array<{ category?: string }> | null): boolean {
+  if (!Array.isArray(items)) return false;
+  return items.some((it) => it && it.category === 'service');
+}
+
+export function resolveInvoiceFooterText(
+  invoice: { items?: Array<{ category?: string }> },
+  settings: ShopSettings
+): string {
+  const shopNameText = sanitizeBillText(settings.shopName) || 'ALiF Ladies Tailor';
+  const cityText = sanitizeBillText(settings.city) || 'Sahibganj';
+  const rawFooter =
+    sanitizeBillText(settings.receiptFooter) ||
+    `Thank you for choosing alif. — ${shopNameText}, ${cityText}.`;
+
+  const baseFooter = rawFooter
+    .replace(/Please bring this bill at the time of garment collection\.?/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const cleanBase = baseFooter || `Thank you for choosing alif., ${cityText}.`;
+
+  if (hasServiceItems(invoice.items)) {
+    return `${cleanBase} ${GARMENT_COLLECTION_NOTICE}`.trim();
+  }
+  return cleanBase;
+}
+
 export function generateInvoicePdfBytes(
   invoice: Invoice,
   payments: PaymentRecord[],
@@ -357,7 +387,7 @@ export function generateInvoicePdfBytes(
   const footerY = Math.max(totalsY + 36, leftY + 36, 755);
   drawLine(margin, footerY, pageWidth - margin, footerY, [0.15, 0.16, 0.18], 1);
   drawText(
-    settings.receiptFooter || 'Thank you for choosing ALiF Ladies Tailor, Sahibganj.',
+    resolveInvoiceFooterText(invoice, settings),
     margin,
     footerY + 16,
     { size: 8.5, color: [0.35, 0.37, 0.40] }
@@ -537,6 +567,9 @@ export function buildConciseInvoiceMessage(invoice: Invoice, settings: ShopSetti
   if (invoice.status === 'Cancelled' && invoice.cancelReason) {
     lines.push(`Cancelled Reason: ${invoice.cancelReason}`);
   } else {
+    if (hasServiceItems(invoice.items)) {
+      lines.push(GARMENT_COLLECTION_NOTICE);
+    }
     lines.push(`Thank you for visiting ${settings.shopName}!`);
   }
 
@@ -568,6 +601,9 @@ export function buildShareBillText(invoice: Invoice, settings: ShopSettings): st
   lines.push(`Total Amount: ${formatINR(invoice.totalPaise)}`);
   lines.push(`Amount Paid: ${formatINR(invoice.paidPaise)}`);
   lines.push(`Remaining Balance: ${formatINR(invoice.balancePaise)} (${invoice.status})`);
+  if (hasServiceItems(invoice.items)) {
+    lines.push(GARMENT_COLLECTION_NOTICE);
+  }
   lines.push(`Thank you for choosing alif.!`);
 
   return lines.join('\n');
@@ -824,9 +860,7 @@ export async function generateInvoiceBillImage(
     ? wrapTextLines(`Notes: ${sanitizeBillText(invoice.notes)}`, 64)
     : [];
 
-  const thankYouMessage =
-    sanitizeBillText(settings.receiptFooter) ||
-    `Thank you for choosing alif. — ${shopNameText}, ${sanitizeBillText(settings.city) || 'Sahibganj'}.`;
+  const thankYouMessage = resolveInvoiceFooterText(invoice, settings);
   const footerLines = wrapTextLines(thankYouMessage, 68);
 
   // Record all logical lines for verification & accessibility
@@ -984,12 +1018,43 @@ export async function generateInvoiceBillImage(
 
   let y = outerPad + innerPad;
 
-  // 3. Masthead: Exact lowercase `alif.` brand wordmark + Shop Metadata + Status Pill
+  // 3. Masthead: Circular `alif.` Atelier Emblem + Exact lowercase `alif.` wordmark + Shop Metadata + Status Pill
+  const badgeR = 21;
+  const badgeCx = contentX + badgeR;
+  const badgeCy = y + badgeR + 2;
+  ctx.save();
+  if (typeof ctx.arc === 'function' && typeof ctx.fill === 'function') {
+    ctx.beginPath();
+    ctx.arc(badgeCx, badgeCy, badgeR, 0, Math.PI * 2);
+    ctx.fillStyle = '#F7F6F2';
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#1C1D21';
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(badgeCx, badgeCy, badgeR - 3, 0, Math.PI * 2);
+    ctx.lineWidth = 0.75;
+    ctx.strokeStyle = '#E2E0D8';
+    ctx.stroke();
+  } else {
+    ctx.fillStyle = '#F7F6F2';
+    ctx.fillRect(contentX, y + 2, badgeR * 2, badgeR * 2);
+    ctx.strokeStyle = '#1C1D21';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(contentX, y + 2, badgeR * 2, badgeR * 2);
+  }
+  ctx.fillStyle = '#0B0B0D';
+  ctx.font = '500 14px Ubuntu, Inter, -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(brandWordmark, badgeCx + 0.5, badgeCy + 1);
+  ctx.restore();
+
   ctx.fillStyle = '#0B0B0D';
   ctx.font = '500 42px Ubuntu, Inter, -apple-system, sans-serif';
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
-  ctx.fillText(brandWordmark, contentX, y);
+  ctx.fillText(brandWordmark, contentX + badgeR * 2 + 12, y);
 
   ctx.fillStyle = '#1C1D21';
   ctx.font = '600 15px Inter, -apple-system, sans-serif';
