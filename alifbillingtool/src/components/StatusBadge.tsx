@@ -1,0 +1,152 @@
+import React from 'react';
+import { PaymentStatus } from '../types/billing';
+
+export interface AlifBrandMarkProps {
+  size?: 'sm' | 'md' | 'lg' | 'xl';
+  className?: string;
+  testId?: string;
+}
+
+/**
+ * Crisp 1:1 circular atelier emblem preserving the exact lowercase `alif.` Ubuntu mark
+ * and monochrome palette (#F7F6F2, #1C1D21, #0B0B0D, #E2E0D8) without stretching or distortion.
+ */
+export function AlifBrandMark({
+  size = 'md',
+  className = '',
+  testId = 'brand-logo-mark'
+}: AlifBrandMarkProps) {
+  const sizeClass =
+    size === 'sm'
+      ? 'w-7 h-7'
+      : size === 'lg'
+      ? 'w-12 h-12'
+      : size === 'xl'
+      ? 'w-16 h-16'
+      : 'w-8 h-8';
+
+  return (
+    <span
+      data-testid={testId}
+      className={`alif-logo-mark ${sizeClass} ${className}`}
+      aria-hidden="true"
+    >
+      <svg
+        xmlns="http://www.w3.org/2000/svg"
+        viewBox="0 0 192 192"
+        width="100%"
+        height="100%"
+        preserveAspectRatio="xMidYMid meet"
+        focusable="false"
+      >
+        <circle
+          cx="96"
+          cy="96"
+          r="90"
+          fill="#F7F6F2"
+          stroke="#1C1D21"
+          strokeWidth="5"
+        />
+        <circle
+          cx="96"
+          cy="96"
+          r="80"
+          fill="none"
+          stroke="#E2E0D8"
+          strokeWidth="2"
+        />
+        <text
+          x="97.5"
+          y="114"
+          textAnchor="middle"
+          fontFamily="'Ubuntu', -apple-system, BlinkMacSystemFont, sans-serif"
+          fontSize="60"
+          fontWeight="500"
+          fill="#0B0B0D"
+          letterSpacing="-1.5"
+        >
+          alif.
+        </text>
+      </svg>
+    </span>
+  );
+}
+
+export function StatusBadge({ status }: { status: PaymentStatus }) {
+  const styles: Record<PaymentStatus, string> = {
+    Paid: 'status-pill-success',
+    'Partially Paid': 'status-pill-warning',
+    Unpaid: 'status-pill-danger',
+    Cancelled: 'status-pill-muted border-dashed line-through'
+  };
+
+  return (
+    <span
+      className={`inline-flex items-center px-2 py-0.5 text-[11px] font-semibold tracking-wide border ${
+        styles[status] || styles.Unpaid
+      }`}
+    >
+      {status}
+    </span>
+  );
+}
+
+export interface ConfirmDialogProps {
+  open: boolean;
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  danger?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}
+
+export function ConfirmDialog({
+  open,
+  title,
+  message,
+  confirmLabel = 'Confirm',
+  cancelLabel = 'Cancel',
+  danger = false,
+  onConfirm: handleConfirm,
+  onCancel: handleCancel
+}: ConfirmDialogProps) {
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 alif-modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+    >
+      <div className="bg-white border border-black max-w-md w-full p-5 sm:p-6 space-y-5 alif-modal-panel overflow-y-auto">
+        <div className="space-y-1.5">
+          <div className="editorial-label">Confirmation required</div>
+          <h3 className="text-base font-semibold text-alif-black">
+            {title}
+          </h3>
+          <p className="text-sm text-alif-charcoal leading-relaxed">{message}</p>
+        </div>
+        <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-alif-border">
+          <button
+            type="button"
+            onClick={handleCancel}
+            className="px-4 py-2 text-xs font-semibold border border-alif-border bg-white text-alif-charcoal hover:border-black min-h-[44px]"
+          >
+            {cancelLabel}
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirm}
+            className={`px-5 py-2 text-xs font-semibold text-white min-h-[44px] ${
+              danger ? 'bg-alif-charcoal hover:bg-black' : 'bg-alif-black hover:bg-zinc-800'
+            }`}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
